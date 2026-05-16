@@ -2,7 +2,7 @@
 <html lang="nb">
 <head>
   <meta charset="UTF-8"/>
-  <title>BIM Avansert Filtrering v4.0</title>
+  <title>BIM Avansert Filtrering v4.1</title>
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   
   <script src="https://components.connect.trimble.com/trimble-connect-workspace-api/index.js"></script>
@@ -50,7 +50,6 @@
 
     main { flex: 1; overflow-y: auto; padding: 16px; display: flex; flex-direction: column; gap: 14px; }
     
-    /* Endret til 4 kolonner for å få plass til alle 8 paneler pent */
     .filter-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; width: 100%; }
     @media (max-width: 1200px) { .filter-grid { grid-template-columns: repeat(3, 1fr); } }
     @media (max-width: 900px) { .filter-grid { grid-template-columns: repeat(2, 1fr); } }
@@ -59,7 +58,6 @@
     .panel { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 14px; display: flex; flex-direction: column; gap: 8px; }
     .panel h3 { font-size: 13px; font-weight: 700; color: var(--blue); margin-bottom: 2px; }
     
-    /* Det dynamiske panelet får en egen stil for nedtrekksmenyen */
     .panel-header-dynamic { display: flex; flex-direction: column; gap: 6px; margin-bottom: 2px; }
     
     .filter-box { background: var(--surface2); border: 1px solid var(--border); border-radius: 6px; height: 160px; overflow-y: auto; padding: 8px; display: flex; flex-direction: column; gap: 6px; }
@@ -73,7 +71,7 @@
 
 <header>
   <div class="header-title">
-    <h1>BIM Avansert Filtrering v4.0</h1>
+    <h1>BIM Avansert Filtrering v4.1</h1>
     <p>Dynamisk flervalgsfiltrering</p>
   </div>
   <button class="btn btn-ghost" id="btnLoad" disabled>Hent modeller</button>
@@ -118,13 +116,12 @@
 let API = null;
 let allModels = [];
 let modelObjectsData = []; 
-let allDiscoveredProperties = new Set(); // Samler alle unike egenskapsnavn funnet i modellen
+let allDiscoveredProperties = new Set(); 
 
-// Definerer de faste egenskapene vi har hardkodet paneler for
 const FIXED_PROPS = ["MMI", "Underdisiplin", "PNS Kode", "Bruksstatus", "Objektklasse", "Objekttype", "Materiale"];
 
-// Ignorerer systemmapper for å unngå å skjule hele modellen
-const IGNORE = new Set(['IFCPROJECT','IFCSITE','IFCBUILDING','IFCBUILDINGSTOREY','IFCSPACE','IFCZONE','IFCGROUP','IFCSYSTEM']);
+// V4.1: Kun overordnede rotnoder ignoreres. Rom, soner og systemer filtreres nå!
+const IGNORE = new Set(['IFCPROJECT','IFCSITE','IFCBUILDING','IFCBUILDINGSTOREY']);
 
 const $ = id => document.getElementById(id);
 const setStatus = (m, c='') => { $('statusBar').textContent = m; $('statusBar').className = c; };
@@ -284,7 +281,7 @@ async function analyzeModelProperties() {
           modelId: mid,
           runtimeId: o.id || o.objectRuntimeId,
           isIgnored: isIgnored,
-          props: {} // DYNAMISK: Her lagrer vi nå ALLE egenskaper vi finner!
+          props: {} 
         };
         
         (o.properties || []).forEach(g => {
@@ -304,24 +301,24 @@ async function analyzeModelProperties() {
       setStatus(`⏳ Skanner egenskaper... ${processedCount} / ${totalObjectsCount}`);
     }
 
-    // ARV AV EGENSKAPER (Geometri-fiks)
     const parentLookup = new Map(tempObjectsData.map(d => [d.runtimeId, d]));
     
+    // V4.1: Oppdatert arvelogikk for geometrinoder
     tempObjectsData.forEach(obj => {
-      let currentObj = obj;
+      let currentParentId = childToParentMap.get(obj.runtimeId);
       let depth = 0;
       
-      // Hvis objektet er tomt for egenskaper, klatrer vi opp i treet for å arve fra parent
-      while (Object.keys(currentObj.props).length === 0 && depth < 5) {
-        const parentId = childToParentMap.get(currentObj.runtimeId);
-        if (parentId && parentLookup.has(parentId)) {
-          currentObj = parentLookup.get(parentId);
-        } else { break; }
+      // Klatre oppover i hierarkiet og flett inn manglende verdier fra foreldrene
+      while (currentParentId && parentLookup.has(currentParentId) && depth < 5) {
+        const parentObj = parentLookup.get(currentParentId);
+        for (const key in parentObj.props) {
+          if (!obj.props[key]) { // Kopier kun hvis barnet IKKE har egenskapen fra før
+            obj.props[key] = parentObj.props[key];
+          }
+        }
+        currentParentId = childToParentMap.get(currentParentId);
         depth++;
       }
-
-      // Slår sammen forelderens egenskaper med objektets egne egenskaper
-      obj.props = { ...currentObj.props, ...obj.props };
 
       if (!obj.isIgnored) {
         modelObjectsData.push(obj);
@@ -339,7 +336,6 @@ async function analyzeModelProperties() {
   setStatus(`✅ Analyse ferdig. Klar til å filtrere.`, 'ok');
 }
 
-// Fyller de 7 faste panelene med data
 function renderFixedPanels() {
   FIXED_PROPS.forEach(propName => {
     const uniqueValues = new Set();
@@ -350,10 +346,8 @@ function renderFixedPanels() {
   });
 }
 
-// Fyller nedtrekksmenyen for det 8. dynamiske panelet
 function populateDynamicDropdown() {
   const select = $('dynamicPropSelect');
-  // Vi filtrerer bort de faste egenskapene fra nedtrekksmenyen så vi ikke får dobbelt opp
   const dynamicOptions = Array.from(allDiscoveredProperties)
                               .filter(p => !FIXED_PROPS.includes(p))
                               .sort();
@@ -361,11 +355,9 @@ function populateDynamicDropdown() {
   select.innerHTML = '<option value="">-- Velg egenskap --</option>' + 
                      dynamicOptions.map(p => `<option value="${p}">${p}</option>`).join('');
                      
-  // Tøm boksen
   $('box_dynamic').innerHTML = '<div style="color: var(--muted); font-size: 11px; padding:4px;">Velg egenskap over</div>';
 }
 
-// Når brukeren velger en ny egenskap i nedtrekksmenyen
 $('dynamicPropSelect').onchange = (e) => {
   const propName = e.target.value;
   if (!propName) {
@@ -373,7 +365,6 @@ $('dynamicPropSelect').onchange = (e) => {
     return;
   }
 
-  // Finn alle unike verdier for den valgte egenskapen
   const uniqueValues = new Set();
   modelObjectsData.forEach(obj => {
     uniqueValues.add(obj.props[propName] || "Mangler verdi");
@@ -400,7 +391,6 @@ function renderFilterBox(elementId, values, categoryKey) {
 async function executeFilter() {
   if (!API || !modelObjectsData.length) return;
   
-  // Bygger opp en oversikt over hvilke kategorier brukeren har gjort valg i
   const activeFilters = {};
   document.querySelectorAll('.filter-checkbox:checked').forEach(cb => {
     const cat = cb.getAttribute('data-cat');
@@ -414,13 +404,12 @@ async function executeFilter() {
   modelObjectsData.forEach(obj => {
     if (!visibilityMap[obj.modelId]) visibilityMap[obj.modelId] = { show: [], hide: [] };
 
-    // Sjekker om objektet matcher ALLE aktive kategorier
     let matchesAll = true;
     for (const cat of activeCategories) {
       const objVal = obj.props[cat] || "Mangler verdi";
       if (!activeFilters[cat].has(objVal)) {
         matchesAll = false;
-        break; // Feiler på en kategori -> objektet skal skjules
+        break; 
       }
     }
 
@@ -438,10 +427,13 @@ async function executeFilter() {
     for (const mid of Object.keys(visibilityMap)) {
       const { show, hide } = visibilityMap[mid];
 
+      // Utfører "hide" først for å sikre at de som mangler verdi forsvinner
       if (hide.length > 0) {
         await API.viewer.setObjectState({ modelObjectIds: [{ modelId: mid, objectRuntimeIds: hide }] }, { visible: false });
         hiddenTotal += hide.length;
       }
+      
+      // Deretter "show" på de som faktisk oppfyller kravene
       if (show.length > 0) {
         await API.viewer.setObjectState({ modelObjectIds: [{ modelId: mid, objectRuntimeIds: show }] }, { visible: "reset" });
         shownTotal += show.length;
@@ -449,7 +441,7 @@ async function executeFilter() {
     }
 
     if (API.viewer.refresh) try { await API.viewer.refresh(); } catch(e){}
-    setStatus(`✅ Filtrering fullført. Viser ${shownTotal} noder, skjulte ${hiddenTotal}.`, 'ok');
+    setStatus(`✅ Filtrering fullført. Viser ${shownTotal} objekter, skjulte ${hiddenTotal}.`, 'ok');
   } catch (e) {
     setStatus('❌ Feil under filtrering: ' + e.message, 'error');
   }
