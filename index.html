@@ -2,7 +2,7 @@
 <html lang="nb">
 <head>
   <meta charset="UTF-8"/>
-  <title>BIM Multi-Filtrering v2.1</title>
+  <title>BIM Multi-Filtrering v2.2</title>
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   
   <script src="https://components.connect.trimble.com/trimble-connect-workspace-api/index.js"></script>
@@ -138,7 +138,6 @@ async function loadModels(){
   if (!API) return;
   setStatus('⏳ Henter modellnavn og 3D-objekter...');
   try {
-    // PKT 1 FIX: Hent reelle filnavn fra API.models (slik som i ditt originale fungerende skript)
     const nameMap = new Map();
     try {
       const resModels = await API.models.getModels();
@@ -148,32 +147,28 @@ async function loadModels(){
         const fn = [m.name, m.fileName, m.filename].find(v => /\.ifc/i.test(v)) || m.name;
         if (id && fn) nameMap.set(id, lastPathPart(fn));
       });
-    } catch(e) { console.warn("Kunne ikke hente filnavn fra API.models:", e); }
+    } catch(e) { console.warn("Kunne ikke hente filnavn:", e); }
 
-    // Hent objektene fra vieweren
     const objs = await API.viewer.getObjects();
     
     allModels = (objs || []).map(m => {
       const mid = m.modelId || m.modelid;
       return {
         id: mid,
-        // Bruker navnet fra kartleggingen vår, fallback til standardverdier hvis ikke funnet
         name: nameMap.get(mid) || m.modelName || m.name || 'Navnløs modell',
         objectIds: (m.objects || []).map(o => o.id || o.objectRuntimeId).filter(id => id != null)
       };
     }).filter(m => m.objectIds.length > 0);
 
     if (allModels.length === 0) {
-      setStatus('⚠️ Ingen objekter funnet i de innlastede modellene.', 'error');
+      setStatus('⚠️ Ingen objekter funnet i modellene.', 'error');
       return;
     }
 
-    // Bygg nedtrekksmenyen
     let optionsHtml = `
       <option value="ALL_MODELS">🌍 Alle modeller (${allModels.reduce((acc, m) => acc + m.objectIds.length, 0)} obj)</option>
       <option value="SELECTED_OBJECTS">🎯 Valgte objekter (krever markering i 3D)</option>
     `;
-    
     allModels.forEach(m => {
       optionsHtml += `<option value="${m.id}">📦 ${m.name} (${m.objectIds.length} obj)</option>`;
     });
@@ -204,7 +199,6 @@ async function analyzeModelProperties() {
       $('emptyState').textContent = 'Ingen objekter er valgt i 3D-vieweren. Marker objekter i modellen og last inn på nytt.';
       return;
     }
-    
     selection.forEach(sel => {
       const mid = sel.modelId || sel.modelid;
       const ids = (sel.objectIds || sel.objectRuntimeIds || []);
@@ -334,17 +328,18 @@ async function executeFilter() {
     for (const mid of Object.keys(visibilityMap)) {
       const { show, hide } = visibilityMap[mid];
 
-      // PKT 2 FIX: Kjør KUN API-kallene hvis matrisene faktisk inneholder ID-er.
+      // SIKKER FIX: Bruker "visibility: hidden" og "visibility: visible" i stedet for bare "hidden" flagget.
       if (hide && hide.length > 0) {
         await API.viewer.setObjectState({
           modelObjectIds: [{ modelId: mid, objectRuntimeIds: hide }]
-        }, { hidden: true });
+        }, { visibility: "hidden" }); 
         hiddenTotal += hide.length;
       }
+      
       if (show && show.length > 0) {
         await API.viewer.setObjectState({
           modelObjectIds: [{ modelId: mid, objectRuntimeIds: show }]
-        }, { hidden: false });
+        }, { visibility: "visible" }); 
         shownTotal += show.length;
       }
     }
@@ -352,7 +347,6 @@ async function executeFilter() {
     setStatus(`✅ Filtrering fullført. Viser ${shownTotal} objekter, skjulte ${hiddenTotal}.`, 'ok');
   } catch (e) {
     setStatus('❌ Feil under filtrering: ' + e.message, 'error');
-    console.error(e);
   }
 }
 
@@ -372,7 +366,7 @@ async function resetFilter() {
       if (modelsToReset[mid].length > 0) {
         await API.viewer.setObjectState({
           modelObjectIds: [{ modelId: mid, objectRuntimeIds: modelsToReset[mid] }]
-        }, { hidden: false });
+        }, { visibility: "visible" }); // Tilbakestiller alle til synlig
       }
     }
 
