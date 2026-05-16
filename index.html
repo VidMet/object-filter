@@ -1,0 +1,319 @@
+<!DOCTYPE html>
+<html lang="nb">
+<head>
+  <meta charset="UTF-8"/>
+  <title>BIM Avansert Multi-Filtrering v1.0</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  
+  <script src="https://components.connect.trimble.com/trimble-connect-workspace-api/index.js"></script>
+  
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700&family=Syne:wght@400;600;700;800&display=swap');
+
+    :root {
+      --bg:        #0d1117;
+      --surface:   #161b22;
+      --surface2:  #1f2937;
+      --border:    #30363d;
+      --ink:       #e6edf3;
+      --muted:     #7d8590;
+      --blue:      #58a6ff;
+      --blue-dim:  #0d2044;
+      --green:     #3fb950;
+      --red:       #f85149;
+      --mono:      'JetBrains Mono', monospace;
+      --sans:      'Syne', sans-serif;
+    }
+
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body { background: var(--bg); color: var(--ink); font-family: var(--sans); min-height: 100vh; display: flex; flex-direction: column; overflow: hidden; }
+
+    header { background: var(--surface); border-bottom: 1px solid var(--border); padding: 10px 16px; display: flex; align-items: center; gap: 12px; flex-shrink: 0; }
+    .header-title { flex: 1; }
+    .header-title h1 { font-size: 16px; font-weight: 800; color: var(--ink); }
+    .header-title p { font-size: 11px; color: var(--muted); font-family: var(--mono); }
+
+    .btn { font-family: var(--sans); font-size: 12px; font-weight: 700; padding: 7px 14px; border-radius: 6px; border: none; cursor: pointer; transition: opacity .15s; white-space: nowrap; }
+    .btn:disabled { opacity: .4; cursor: not-allowed; }
+    .btn-primary { background: var(--blue); color: #000; }
+    .btn-ghost   { background: var(--surface2); color: var(--ink); border: 1px solid var(--border); }
+    .btn-danger  { background: #21262d; color: var(--red); border: 1px solid #3a1c1c; }
+
+    #statusBar { font-family: var(--mono); font-size: 11px; padding: 6px 16px; background: var(--blue-dim); color: var(--blue); border-bottom: 1px solid #1a3a5c; }
+    #statusBar.ok { background: #1a3a22; color: var(--green); }
+
+    #controlBar { background: var(--surface); border-bottom: 1px solid var(--border); padding: 8px 16px; display: flex; gap: 15px; align-items: center; }
+    .select-group { display: flex; align-items: center; gap: 8px; flex: 1; }
+    label { font-size: 11px; color: var(--muted); font-family: var(--mono); white-space: nowrap; }
+    select { font-family: var(--mono); font-size: 12px; background: var(--surface2); color: var(--ink); border: 1px solid var(--border); border-radius: 6px; padding: 6px 10px; width: 100%; }
+
+    main { flex: 1; overflow-y: auto; padding: 16px; display: flex; flex-direction: column; gap: 14px; }
+    
+    /* Det 4-delte rutenettet */
+    .filter-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 16px; width: 100%; }
+    @media (max-width: 600px) { .filter-grid { grid-template-columns: 1fr; } } /* Enkeltkolonne på smale skjermer */
+
+    .panel { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 14px; display: flex; flex-direction: column; gap: 10px; }
+    .panel h3 { font-size: 13px; font-weight: 700; color: var(--blue); margin-bottom: 4px; }
+    
+    .filter-box { background: var(--surface2); border: 1px solid var(--border); border-radius: 6px; height: 180px; overflow-y: auto; padding: 8px; display: flex; flex-direction: column; gap: 6px; }
+    .filter-item { display: flex; align-items: center; gap: 8px; font-family: var(--mono); font-size: 11px; cursor: pointer; padding: 4px; }
+    .filter-item input { cursor: pointer; }
+
+    .empty { text-align: center; padding: 40px; color: var(--muted); font-size: 13px; }
+  </style>
+</head>
+<body>
+
+<header>
+  <div class="header-title">
+    <h1>BIM Multi-Filtrering</h1>
+    <p>Kombiner filtre for MMI, Underdisiplin, PNS og Bruksstatus</p>
+  </div>
+  <button class="btn btn-ghost" id="btnLoad" disabled>Hent modeller</button>
+  <button class="btn btn-primary" id="btnFilter" disabled>🔍 Filtrer i 3D</button>
+  <button class="btn btn-danger" id="btnReset" disabled>↺ Vis alle</button>
+</header>
+
+<div id="statusBar">Kobler til Trimble Connect...</div>
+
+<div id="controlBar">
+  <div class="select-group">
+    <label>Velg modell:</label>
+    <select id="modelSelect" disabled><option value="">– Laster... –</option></select>
+  </div>
+</div>
+
+<main id="mainContent">
+  <div class="filter-grid" id="filterGrid" style="display: none;">
+    <div class="panel">
+      <h3>Del 1: MMI-nivå</h3>
+      <div class="filter-box" id="box_mmi"></div>
+    </div>
+    
+    <div class="panel">
+      <h3>Del 2: Fagområde (Underdisiplin)</h3>
+      <div class="filter-box" id="box_underdisiplin"></div>
+    </div>
+    
+    <div class="panel">
+      <h3>Del 3: PNS Kode</h3>
+      <div class="filter-box" id="box_pns"></div>
+    </div>
+    
+    <div class="panel">
+      <h3>Del 4: Bruksstatus</h3>
+      <div class="filter-box" id="box_bruksstatus"></div>
+    </div>
+  </div>
+  
+  <div class="empty" id="emptyState">Last inn modeller og analyser egenskaper for å starte.</div>
+</main>
+
+<script>
+let API = null;
+let allModels = [];
+let modelObjectsData = []; // Lagrer objektene og deres 4 egenskapsverdier
+
+// Definerer de nøyaktige egenskapsnavnene vi ser etter
+const PROP_KEYS = {
+  mmi: "MMI",
+  underdisiplin: "Underdisiplin",
+  pns: "PNS Kode",
+  bruksstatus: "Bruksstatus"
+};
+
+const $ = id => document.getElementById(id);
+const setStatus = (m, c='') => { $('statusBar').textContent = m; $('statusBar').className = c; };
+
+async function connect(){
+  try {
+    API = await window.TrimbleConnectWorkspace.connect(window.parent);
+    $('btnLoad').disabled = false;
+    setStatus('✅ Tilkoblet Trimble Connect.', 'ok');
+  } catch(e) { setStatus('❌ Kunne ikke koble til API.'); }
+}
+
+async function loadModels(){
+  if (!API) return;
+  setStatus('⏳ Henter modellinformasjon...');
+  try {
+    const objs = await API.viewer.getObjects();
+    allModels = (objs || []).map(m => ({
+      id: m.modelId || m.modelid,
+      name: m.name || 'Ukjent modell',
+      objectIds: (m.objects || []).map(o => o.id || o.objectRuntimeId).filter(id => id != null)
+    })).filter(m => m.objectIds.length > 0);
+
+    $('modelSelect').innerHTML = allModels.map(m => `<option value="${m.id}">${m.name} (${m.objectIds.length} obj)</option>`).join('');
+    $('modelSelect').disabled = false;
+    
+    await analyzeModelProperties();
+  } catch(e) { setStatus('❌ Feil ved henting av modeller: ' + e.message); }
+}
+
+async function analyzeModelProperties() {
+  const mid = $('modelSelect').value;
+  if (!mid) return;
+
+  const model = allModels.find(m => m.id === mid);
+  modelObjectsData = [];
+  
+  // Sorteringslister for unike verdier i hver kategori
+  const uniqueSets = { mmi: new Set(), underdisiplin: new Set(), pns: new Set(), bruksstatus: new Set() };
+  const CHUNK = 200;
+
+  for (let i = 0; i < model.objectIds.length; i += CHUNK) {
+    const propsArr = await API.viewer.getObjectProperties(mid, model.objectIds.slice(i, i + CHUNK));
+    
+    propsArr.forEach(o => {
+      // Standardverdi hvis egenskapen mangler helt på objektet
+      const objData = {
+        runtimeId: o.id || o.objectRuntimeId,
+        mmi: "Mangler verdi",
+        underdisiplin: "Mangler verdi",
+        pns: "Mangler verdi",
+        bruksstatus: "Mangler verdi"
+      };
+      
+      // Gå igjennom objektets egenskapsgrupper og finn de 4 verdiene
+      (o.properties || []).forEach(g => {
+        (g.properties || []).forEach(p => {
+          const val = p.value ? p.value.toString().trim() : "";
+          if (!val) return;
+
+          if (p.name === PROP_KEYS.mmi) objData.mmi = val;
+          if (p.name === PROP_KEYS.underdisiplin) objData.underdisiplin = val;
+          if (p.name === PROP_KEYS.pns) objData.pns = val;
+          if (p.name === PROP_KEYS.bruksstatus) objData.bruksstatus = val;
+        });
+      });
+
+      // Legg til i settene for unike verdier
+      uniqueSets.mmi.add(objData.mmi);
+      uniqueSets.underdisiplin.add(objData.underdisiplin);
+      uniqueSets.pns.add(objData.pns);
+      uniqueSets.bruksstatus.add(objData.bruksstatus);
+
+      modelObjectsData.push(objData);
+    });
+    setStatus(`⏳ Skanner egenskaper... ${Math.min(i+CHUNK, model.objectIds.length)} / ${model.objectIds.length}`);
+  }
+
+  // Generer avmerkingsbokser for de fire listene
+  renderFilterBox('box_mmi', Array.from(uniqueSets.mmi).sort(), 'mmi');
+  renderFilterBox('box_underdisiplin', Array.from(uniqueSets.underdisiplin).sort(), 'underdisiplin');
+  renderFilterBox('box_pns', Array.from(uniqueSets.pns).sort(), 'pns');
+  renderFilterBox('box_bruksstatus', Array.from(uniqueSets.bruksstatus).sort(), 'bruksstatus');
+  
+  $('filterGrid').style.display = 'grid';
+  $('emptyState').style.display = 'none';
+  $('btnFilter').disabled = false;
+  $('btnReset').disabled = false;
+  setStatus('✅ Egenskaper analysert. Klar til å filtrere.', 'ok');
+}
+
+function renderFilterBox(elementId, values, categoryKey) {
+  const box = $(elementId);
+  if(values.length === 0) {
+    box.innerHTML = '<div style="color: var(--muted); font-size: 11px; padding:4px;">Ingen verdier funnet</div>';
+    return;
+  }
+
+  // Genererer sjekkboksene. Legg merke til at de IKKE er krysset av ("checked") som standard nå, 
+  // slik at brukeren aktivt velger hva de vil spisse søket mot.
+  box.innerHTML = values.map(val => `
+    <label class="filter-item">
+      <input type="checkbox" value="${val}" data-cat="${categoryKey}" class="filter-checkbox">
+      <span>${val}</span>
+    </label>
+  `).join('');
+}
+
+async function executeFilter() {
+  if (!API || !modelObjectsData.length) return;
+  const mid = $('modelSelect').value;
+  
+  // Finn ut hva brukeren faktisk har valgt i de 4 forskjellige kategoriene
+  const activeFilters = { mmi: new Set(), underdisiplin: new Set(), pns: new Set(), bruksstatus: new Set() };
+  
+  document.querySelectorAll('.filter-checkbox:checked').forEach(cb => {
+    const cat = cb.getAttribute('data-cat');
+    activeFilters[cat].add(cb.value);
+  });
+
+  const objectsToHide = [];
+  const objectsToShow = [];
+
+  // Filtreringslogikk (AND mellom kategorier, OR innad i samme kategori)
+  modelObjectsData.forEach(obj => {
+    
+    // Hvis brukeren har valgt noe i en kategori, MÅ objektet matche en av verdiene (AND).
+    // Hvis brukeren ikke har valgt noe i en kategori, slipper objektet igjennom på den egenskapen.
+    const matchMMI = activeFilters.mmi.size === 0 || activeFilters.mmi.has(obj.mmi);
+    const matchUnder = activeFilters.underdisiplin.size === 0 || activeFilters.underdisiplin.has(obj.underdisiplin);
+    const matchPNS = activeFilters.pns.size === 0 || activeFilters.pns.has(obj.pns);
+    const matchStatus = activeFilters.bruksstatus.size === 0 || activeFilters.bruksstatus.has(obj.bruksstatus);
+
+    // Objektet må oppfylle kravene i samtlige fire deler
+    if (matchMMI && matchUnder && matchPNS && matchStatus) {
+      objectsToShow.push(obj.runtimeId);
+    } else {
+      objectsToHide.push(obj.runtimeId);
+    }
+  });
+
+  try {
+    setStatus('⏳ Oppdaterer 3D-visning...');
+
+    // Skjul alle objekter som feilet kravene
+    if (objectsToHide.length > 0) {
+      await API.viewer.setObjectState({
+        modelObjectIds: [{ modelId: mid, objectRuntimeIds: objectsToHide }]
+      }, { hidden: true });
+    }
+
+    // Vis objektene som slapp gjennom kravene
+    if (objectsToShow.length > 0) {
+      await API.viewer.setObjectState({
+        modelObjectIds: [{ modelId: mid, objectRuntimeIds: objectsToShow }]
+      }, { hidden: false });
+    }
+
+    setStatus(`✅ Suksess! Viser ${objectsToShow.length} objekter. Skjulte ${objectsToHide.length}.`, 'ok');
+  } catch (e) {
+    setStatus('❌ Feil under filtrering: ' + e.message);
+  }
+}
+
+async function resetFilter() {
+  if (!API) return;
+  const mid = $('modelSelect').value;
+
+  try {
+    setStatus('⏳ Nullstiller visning...');
+    
+    // Vis samtlige objekter i 3D-vieweren igjen
+    await API.viewer.setObjectState({
+      modelObjectIds: [{ modelId: mid, objectRuntimeIds: modelObjectsData.map(o => o.runtimeId) }]
+    }, { hidden: false });
+
+    // Tømmer alle avmerkingsbokser
+    document.querySelectorAll('.filter-checkbox').forEach(cb => cb.checked = false);
+
+    setStatus('✅ Filter nullstilt. Alle objekter er synlige.', 'ok');
+  } catch (e) {
+    setStatus('❌ Feil ved nullstilling: ' + e.message);
+  }
+}
+
+// Eventlisteners
+$('btnLoad').onclick = loadModels;
+$('modelSelect').onchange = analyzeModelProperties;
+$('btnFilter').onclick = executeFilter;
+$('btnReset').onclick = resetFilter;
+
+connect();
+</script>
+</body>
+</html>
