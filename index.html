@@ -2,7 +2,7 @@
 <html lang="nb">
 <head>
   <meta charset="UTF-8"/>
-  <title>BIM Avansert Multi-Filtrering v2.0</title>
+  <title>BIM Multi-Filtrering v2.1</title>
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   
   <script src="https://components.connect.trimble.com/trimble-connect-workspace-api/index.js"></script>
@@ -41,6 +41,7 @@
 
     #statusBar { font-family: var(--mono); font-size: 11px; padding: 6px 16px; background: var(--blue-dim); color: var(--blue); border-bottom: 1px solid #1a3a5c; }
     #statusBar.ok { background: #1a3a22; color: var(--green); }
+    #statusBar.error { background: #3a1212; color: var(--red); }
 
     #controlBar { background: var(--surface); border-bottom: 1px solid var(--border); padding: 8px 16px; display: flex; gap: 15px; align-items: center; }
     .select-group { display: flex; align-items: center; gap: 8px; flex: 1; }
@@ -112,7 +113,7 @@
 <script>
 let API = null;
 let allModels = [];
-let modelObjectsData = []; // Lagrer objektene og deres egenskapsverdier
+let modelObjectsData = []; 
 
 const PROP_KEYS = {
   mmi: "MMI",
@@ -123,38 +124,54 @@ const PROP_KEYS = {
 
 const $ = id => document.getElementById(id);
 const setStatus = (m, c='') => { $('statusBar').textContent = m; $('statusBar').className = c; };
+const lastPathPart = (v) => (v || '').split('/').pop().split('\\').pop();
 
 async function connect(){
   try {
     API = await window.TrimbleConnectWorkspace.connect(window.parent);
     $('btnLoad').disabled = false;
     setStatus('✅ Tilkoblet Trimble Connect.', 'ok');
-  } catch(e) { setStatus('❌ Kunne ikke koble til API.'); }
+  } catch(e) { setStatus('❌ Kunne ikke koble til API.', 'error'); }
 }
 
 async function loadModels(){
   if (!API) return;
-  setStatus('⏳ Henter modellinformasjon...');
+  setStatus('⏳ Henter modellnavn og 3D-objekter...');
   try {
+    // PKT 1 FIX: Hent reelle filnavn fra API.models (slik som i ditt originale fungerende skript)
+    const nameMap = new Map();
+    try {
+      const resModels = await API.models.getModels();
+      const list = Array.isArray(resModels) ? resModels : (resModels?.models || resModels?.items || []);
+      list.forEach(m => {
+        const id = m.id || m.modelId;
+        const fn = [m.name, m.fileName, m.filename].find(v => /\.ifc/i.test(v)) || m.name;
+        if (id && fn) nameMap.set(id, lastPathPart(fn));
+      });
+    } catch(e) { console.warn("Kunne ikke hente filnavn fra API.models:", e); }
+
+    // Hent objektene fra vieweren
     const objs = await API.viewer.getObjects();
     
-    // Rettet feil: Henter m.name eller m.title for å unngå "Ukjent modell"
-    allModels = (objs || []).map(m => ({
-      id: m.modelId || m.modelid,
-      name: m.modelName || m.name || m.title || 'Navnløs modell',
-      objectIds: (m.objects || []).map(o => o.id || o.objectRuntimeId).filter(id => id != null)
-    })).filter(m => m.objectIds.length > 0);
+    allModels = (objs || []).map(m => {
+      const mid = m.modelId || m.modelid;
+      return {
+        id: mid,
+        // Bruker navnet fra kartleggingen vår, fallback til standardverdier hvis ikke funnet
+        name: nameMap.get(mid) || m.modelName || m.name || 'Navnløs modell',
+        objectIds: (m.objects || []).map(o => o.id || o.objectRuntimeId).filter(id => id != null)
+      };
+    }).filter(m => m.objectIds.length > 0);
 
     if (allModels.length === 0) {
-      setStatus('⚠️ Ingen objekter funnet i de innlastede modellene.');
+      setStatus('⚠️ Ingen objekter funnet i de innlastede modellene.', 'error');
       return;
     }
 
-    // Bygg nedtrekksmenyen med spesialvalg + de spesifikke modellene
+    // Bygg nedtrekksmenyen
     let optionsHtml = `
       <option value="ALL_MODELS">🌍 Alle modeller (${allModels.reduce((acc, m) => acc + m.objectIds.length, 0)} obj)</option>
       <option value="SELECTED_OBJECTS">🎯 Valgte objekter (krever markering i 3D)</option>
-      <hr>
     `;
     
     allModels.forEach(m => {
@@ -165,7 +182,7 @@ async function loadModels(){
     $('modelSelect').disabled = false;
     
     await analyzeModelProperties();
-  } catch(e) { setStatus('❌ Feil ved henting av modeller: ' + e.message); }
+  } catch(e) { setStatus('❌ Feil ved henting av modeller: ' + e.message, 'error'); }
 }
 
 async function analyzeModelProperties() {
@@ -179,17 +196,15 @@ async function analyzeModelProperties() {
   setStatus('⏳ Forbereder analyse...');
 
   if (mode === "SELECTED_OBJECTS") {
-    // Hent ut kun de objektene brukeren har valgt i 3D-vieweren akkurat nå
     const selection = await API.viewer.getSelection();
     if (!selection || selection.length === 0) {
-      setStatus('⚠️ Ingen objekter er valgt i 3D-vieweren. Velg objekter først, og klikk "Hent modeller" på nytt.');
+      setStatus('⚠️ Ingen objekter er valgt i 3D-vieweren.', 'error');
       $('filterGrid').style.display = 'none';
       $('emptyState').style.display = 'block';
       $('emptyState').textContent = 'Ingen objekter er valgt i 3D-vieweren. Marker objekter i modellen og last inn på nytt.';
       return;
     }
     
-    // Grupper valgte objekter per modell
     selection.forEach(sel => {
       const mid = sel.modelId || sel.modelid;
       const ids = (sel.objectIds || sel.objectRuntimeIds || []);
@@ -198,19 +213,16 @@ async function analyzeModelProperties() {
       }
     });
   } else if (mode === "ALL_MODELS") {
-    // Legg til alle objekter fra alle modeller i prosesseringslisten
     allModels.forEach(m => {
       chunksToProcess.push({ modelId: m.id, objectIds: m.objectIds });
     });
   } else {
-    // En spesifikk modell er valgt
     const targetModel = allModels.find(m => m.id === mode);
     if (targetModel) {
       chunksToProcess.push({ modelId: targetModel.id, objectIds: targetModel.objectIds });
     }
   }
 
-  // Kjør skanningen i bolker (chunks) på tvers av forberedte data
   const CHUNK_SIZE = 200;
   let totalObjectsCount = chunksToProcess.reduce((acc, c) => acc + c.objectIds.length, 0);
   let processedCount = 0;
@@ -258,7 +270,6 @@ async function analyzeModelProperties() {
     }
   }
 
-  // Generer sjekkboksene i UI
   renderFilterBox('box_mmi', Array.from(uniqueSets.mmi).sort(), 'mmi');
   renderFilterBox('box_underdisiplin', Array.from(uniqueSets.underdisiplin).sort(), 'underdisiplin');
   renderFilterBox('box_pns', Array.from(uniqueSets.pns).sort(), 'pns');
@@ -289,14 +300,12 @@ function renderFilterBox(elementId, values, categoryKey) {
 async function executeFilter() {
   if (!API || !modelObjectsData.length) return;
   
-  // Hent valgte sjekkbokser
   const activeFilters = { mmi: new Set(), underdisiplin: new Set(), pns: new Set(), bruksstatus: new Set() };
   document.querySelectorAll('.filter-checkbox:checked').forEach(cb => {
     const cat = cb.getAttribute('data-cat');
     activeFilters[cat].add(cb.value);
   });
 
-  // Grupperer hvilke runtimeIds som skal skjules eller vises per modellId
   const visibilityMap = {};
 
   modelObjectsData.forEach(obj => {
@@ -319,25 +328,31 @@ async function executeFilter() {
   try {
     setStatus('⏳ Oppdaterer 3D-visning...');
 
-    // Utfør synlighetsendring for hver modell separat (kreves av API-et)
+    let hiddenTotal = 0;
+    let shownTotal = 0;
+
     for (const mid of Object.keys(visibilityMap)) {
       const { show, hide } = visibilityMap[mid];
 
-      if (hide.length > 0) {
+      // PKT 2 FIX: Kjør KUN API-kallene hvis matrisene faktisk inneholder ID-er.
+      if (hide && hide.length > 0) {
         await API.viewer.setObjectState({
           modelObjectIds: [{ modelId: mid, objectRuntimeIds: hide }]
         }, { hidden: true });
+        hiddenTotal += hide.length;
       }
-      if (show.length > 0) {
+      if (show && show.length > 0) {
         await API.viewer.setObjectState({
           modelObjectIds: [{ modelId: mid, objectRuntimeIds: show }]
         }, { hidden: false });
+        shownTotal += show.length;
       }
     }
 
-    setStatus(`✅ Filtrering utført.`, 'ok');
+    setStatus(`✅ Filtrering fullført. Viser ${shownTotal} objekter, skjulte ${hiddenTotal}.`, 'ok');
   } catch (e) {
-    setStatus('❌ Feil under filtrering: ' + e.message);
+    setStatus('❌ Feil under filtrering: ' + e.message, 'error');
+    console.error(e);
   }
 }
 
@@ -347,7 +362,6 @@ async function resetFilter() {
   try {
     setStatus('⏳ Nullstiller visning...');
     
-    // Grupper etter modellId for å slå på alt igjen
     const modelsToReset = {};
     modelObjectsData.forEach(obj => {
       if (!modelsToReset[obj.modelId]) modelsToReset[obj.modelId] = [];
@@ -355,19 +369,20 @@ async function resetFilter() {
     });
 
     for (const mid of Object.keys(modelsToReset)) {
-      await API.viewer.setObjectState({
-        modelObjectIds: [{ modelId: mid, objectRuntimeIds: modelsToReset[mid] }]
-      }, { hidden: false });
+      if (modelsToReset[mid].length > 0) {
+        await API.viewer.setObjectState({
+          modelObjectIds: [{ modelId: mid, objectRuntimeIds: modelsToReset[mid] }]
+        }, { hidden: false });
+      }
     }
 
     document.querySelectorAll('.filter-checkbox').forEach(cb => cb.checked = false);
     setStatus('✅ Filter nullstilt. Alle objekter er synlige.', 'ok');
   } catch (e) {
-    setStatus('❌ Feil ved nullstilling: ' + e.message);
+    setStatus('❌ Feil ved nullstilling: ' + e.message, 'error');
   }
 }
 
-// Eventlisteners
 $('btnLoad').onclick = loadModels;
 $('modelSelect').onchange = analyzeModelProperties;
 $('btnFilter').onclick = executeFilter;
