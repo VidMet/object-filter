@@ -2,7 +2,7 @@
 <html lang="nb">
 <head>
   <meta charset="UTF-8"/>
-  <title>BIM Multi-Filtrering v2.9</title>
+  <title>BIM Multi-Filtrering v3.0</title>
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   
   <script src="https://components.connect.trimble.com/trimble-connect-workspace-api/index.js"></script>
@@ -67,7 +67,7 @@
 
 <header>
   <div class="header-title">
-    <h1>BIM Multi-Filtrering v2.9</h1>
+    <h1>BIM Multi-Filtrering v3.0</h1>
     <p>Kombiner filtre for MMI, Underdisiplin, PNS og Bruksstatus</p>
   </div>
   <button class="btn btn-ghost" id="btnLoad" disabled>Hent modeller</button>
@@ -178,6 +178,7 @@ async function loadModels(){
   } catch(e) { setStatus('❌ Feil ved henting av modeller: ' + e.message, 'error'); }
 }
 
+// Skanner dypere ned i objekt-hierarkiet for å fange proxy-geometri
 function getAllRuntimeIds(obj) {
   let ids = [];
   const mainId = obj.id || obj.objectRuntimeId;
@@ -401,12 +402,12 @@ async function executeFilter() {
     for (const mid of Object.keys(visibilityMap)) {
       const { show, hide } = visibilityMap[mid];
 
-      // KUN den offisielle { hidden: true } kommandoen brukes nå. 
-      // Ingen opacity, ingen visible, ingen ghost. 
+      // KORREKT IMPLEMENTERING AV SYNLIGHET (v3.0)
+      // Ved å bruke "visible: false" forteller vi 3D-motoren at objektet skal skjules fullstendig.
       if (hide && hide.length > 0) {
         const targetIds = { modelObjectIds: [{ modelId: mid, objectRuntimeIds: hide }] };
         if(API.viewer.setObjectState) {
-          await API.viewer.setObjectState(targetIds, { hidden: true });
+          await API.viewer.setObjectState(targetIds, { visible: false });
         }
         hiddenTotal += hide.length;
       }
@@ -414,7 +415,7 @@ async function executeFilter() {
       if (show && show.length > 0) {
         const targetIds = { modelObjectIds: [{ modelId: mid, objectRuntimeIds: show }] };
         if(API.viewer.setObjectState) {
-          await API.viewer.setObjectState(targetIds, { hidden: false });
+          await API.viewer.setObjectState(targetIds, { visible: true });
         }
         shownTotal += show.length;
       }
@@ -444,7 +445,8 @@ async function resetFilter() {
       if (modelsToReset[mid].length > 0) {
         const targetIds = { modelObjectIds: [{ modelId: mid, objectRuntimeIds: modelsToReset[mid] }] };
         if (API.viewer.setObjectState) {
-          await API.viewer.setObjectState(targetIds, { hidden: false });
+          // "reset" tvinger modellen tilbake til slik den var i utgangspunktet (f.eks original IFC-synlighet)
+          await API.viewer.setObjectState(targetIds, { visible: "reset" });
         }
       }
     }
