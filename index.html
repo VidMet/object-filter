@@ -2,7 +2,7 @@
 <html lang="nb">
 <head>
   <meta charset="UTF-8"/>
-  <title>BIM Multi-Filtrering v2.3</title>
+  <title>BIM Multi-Filtrering v2.4</title>
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   
   <script src="https://components.connect.trimble.com/trimble-connect-workspace-api/index.js"></script>
@@ -68,7 +68,7 @@
 <header>
   <div class="header-title">
     <h1>BIM Multi-Filtrering</h1>
-    <p>Kombiner filtre for MMI, Underdisiplin, PNS og Bruksstatus</p>
+    <p>Kombiner filtre for MMI, Underdisiplin, PNS og Bruksstatus (Inkludert Proxy-fiks)</p>
   </div>
   <button class="btn btn-ghost" id="btnLoad" disabled>Hent modeller</button>
   <button class="btn btn-primary" id="btnFilter" disabled>🔍 Filtrer i 3D</button>
@@ -156,6 +156,8 @@ async function loadModels(){
       return {
         id: mid,
         name: nameMap.get(mid) || m.modelName || m.name || 'Navnløs modell',
+        // Vi lagrer hele objekt-strukturen slik at vi kan hente ut eventuelle "children" (undernoder) senere
+        rawObjects: m.objects || [],
         objectIds: (m.objects || []).map(o => o.id || o.objectRuntimeId).filter(id => id != null)
       };
     }).filter(m => m.objectIds.length > 0);
@@ -178,6 +180,20 @@ async function loadModels(){
     
     await analyzeModelProperties();
   } catch(e) { setStatus('❌ Feil ved henting av modeller: ' + e.message, 'error'); }
+}
+
+// Hjelpefunksjon som henter ut absolutt alle under-IDer (children/geometri) fra et objekt
+function getAllRuntimeIds(obj) {
+  let ids = [];
+  const mainId = obj.id || obj.objectRuntimeId;
+  if (mainId != null) ids.push(mainId);
+  
+  if (obj.objects && Array.isArray(obj.objects)) {
+    obj.objects.forEach(child => {
+      ids = ids.concat(getAllRuntimeIds(child));
+    });
+  }
+  return ids;
 }
 
 async function analyzeModelProperties() {
@@ -203,17 +219,41 @@ async function analyzeModelProperties() {
       const mid = sel.modelId || sel.modelid;
       const ids = (sel.objectIds || sel.objectRuntimeIds || []);
       if (mid && ids.length > 0) {
-        chunksToProcess.push({ modelId: mid, objectIds: ids });
+        // For valgte objekter finner vi også eventuelle under-objekter hvis vi har dem lagret
+        let allExpandedIds = [...ids];
+        const targetModel = allModels.find(m => m.id === mid);
+        if (targetModel) {
+          targetModel.rawObjects.forEach(rawO => {
+            const rId = rawO.id || rawO.objectRuntimeId;
+            if (ids.includes(rId)) {
+              allExpandedIds = allExpandedIds.concat(getAllRuntimeIds(rawO));
+            }
+          });
+        }
+        // Fjern duplikater
+        allExpandedIds = Array.from(new Set(allExpandedIds));
+        chunksToProcess.push({ modelId: mid, objectIds: allExpandedIds });
       }
     });
   } else if (mode === "ALL_MODELS") {
     allModels.forEach(m => {
-      chunksToProcess.push({ modelId: m.id, objectIds: m.objectIds });
+      // PROXY FIKS: Hent absolutt alle ID-er, inkludert dype geometrinoder/children
+      let allExpandedIds = [];
+      m.rawObjects.forEach(rawO => {
+        allExpandedIds = allExpandedIds.concat(getAllRuntimeIds(rawO));
+      });
+      allExpandedIds = Array.from(new Set(allExpandedIds));
+      chunksToProcess.push({ modelId: m.id, objectIds: allExpandedIds });
     });
   } else {
     const targetModel = allModels.find(m => m.id === mode);
     if (targetModel) {
-      chunksToProcess.push({ modelId: targetModel.id, objectIds: targetModel.objectIds });
+      let allExpandedIds = [];
+      targetModel.rawObjects.forEach(rawO => {
+        allExpandedIds = allExpandedIds.concat(getAllRuntimeIds(rawO));
+      });
+      allExpandedIds = Array.from(new Set(allExpandedIds));
+      chunksToProcess.push({ modelId: targetModel.id, objectIds: allExpandedIds });
     }
   }
 
@@ -221,22 +261,40 @@ async function analyzeModelProperties() {
   let totalObjectsCount = chunksToProcess.reduce((acc, c) => acc + c.objectIds.length, 0);
   let processedCount = 0;
 
+  // For å passe på at egenskaper fra "parent" arves ned til geometri-children, mapper vi relasjoner
   for (const chunkGroup of chunksToProcess) {
     const mid = chunkGroup.modelId;
     const ids = chunkGroup.objectIds;
+
+    // Bygg et raskt oppslagskart for å finne ut hvilke sub-IDer som hører til hvilket hovedobjekt
+    const childToParentMap = new Map();
+    const targetModel = allModels.find(m => m.id === mid);
+    if (targetModel) {
+      targetModel.rawObjects.forEach(rawO => {
+        const parentId = rawO.id || rawO.objectRuntimeId;
+        const allSubIds = getAllRuntimeIds(rawO);
+        allSubIds.forEach(subId => {
+          if (subId !== parentId) childToParentMap.set(subId, parentId);
+        });
+      });
+    }
+
+    // Midlertidig lagring for å fylle inn egenskaper på undernoder etterpå
+    const tempObjectsData = [];
 
     for (let i = 0; i < ids.length; i += CHUNK_SIZE) {
       const currentBatch = ids.slice(i, i + CHUNK_SIZE);
       const propsArr = await API.viewer.getObjectProperties(mid, currentBatch);
       
       propsArr.forEach(o => {
+        const currentId = o.id || o.objectRuntimeId;
         const objData = {
           modelId: mid,
-          runtimeId: o.id || o.objectRuntimeId,
-          mmi: "Mangler verdi",
-          underdisiplin: "Mangler verdi",
-          pns: "Mangler verdi",
-          bruksstatus: "Mangler verdi"
+          runtimeId: currentId,
+          mmi: "",
+          underdisiplin: "",
+          pns: "",
+          bruksstatus: ""
         };
         
         (o.properties || []).forEach(g => {
@@ -251,17 +309,45 @@ async function analyzeModelProperties() {
           });
         });
 
-        uniqueSets.mmi.add(objData.mmi);
-        uniqueSets.underdisiplin.add(objData.underdisiplin);
-        uniqueSets.pns.add(objData.pns);
-        uniqueSets.bruksstatus.add(objData.bruksstatus);
-
-        modelObjectsData.push(objData);
+        tempObjectsData.push(objData);
       });
 
       processedCount += currentBatch.length;
       setStatus(`⏳ Skanner egenskaper... ${processedCount} / ${totalObjectsCount}`);
     }
+
+    // ARV-LOGIKK: Hvis en undernode (geometri) mangler egenskaper, lar vi den arve fra sitt hovedobjekt (parent)
+    const parentLookup = new Map(tempObjectsData.map(d => [d.runtimeId, d]));
+    
+    tempObjectsData.forEach(obj => {
+      let currentObj = obj;
+      let depth = 0;
+      
+      // Hvis noden mangler data og har en forelder, sjekk forelderen
+      while ((!currentObj.mmi && !currentObj.underdisiplin && !currentObj.pns && !currentObj.bruksstatus) && depth < 5) {
+        const parentId = childToParentMap.get(currentObj.runtimeId);
+        if (parentId && parentLookup.has(parentId)) {
+          currentObj = parentLookup.get(parentId);
+        } else {
+          break;
+        }
+        depth++;
+      }
+
+      // Sett fallback til "Mangler verdi" hvis ingen data ble funnet i treet
+      obj.mmi = obj.mmi || currentObj.mmi || "Mangler verdi";
+      obj.underdisiplin = obj.underdisiplin || currentObj.underdisiplin || "Mangler verdi";
+      obj.pns = obj.pns || currentObj.pns || "Mangler verdi";
+      obj.bruksstatus = obj.bruksstatus || currentObj.bruksstatus || "Mangler verdi";
+
+      // Legg til de endelige verdiene i de unike settene for UI
+      uniqueSets.mmi.add(obj.mmi);
+      uniqueSets.underdisiplin.add(obj.underdisiplin);
+      uniqueSets.pns.add(obj.pns);
+      uniqueSets.bruksstatus.add(obj.bruksstatus);
+
+      modelObjectsData.push(obj);
+    });
   }
 
   renderFilterBox('box_mmi', Array.from(uniqueSets.mmi).sort(), 'mmi');
@@ -273,7 +359,7 @@ async function analyzeModelProperties() {
   $('emptyState').style.display = 'none';
   $('btnFilter').disabled = false;
   $('btnReset').disabled = false;
-  setStatus(`✅ Analyse ferdig. Hentet data fra ${modelObjectsData.length} objekter.`, 'ok');
+  setStatus(`✅ Analyse ferdig. Hentet data fra ${modelObjectsData.length} geometri-noder.`, 'ok');
 }
 
 function renderFilterBox(elementId, values, categoryKey) {
@@ -328,15 +414,12 @@ async function executeFilter() {
     for (const mid of Object.keys(visibilityMap)) {
       const { show, hide } = visibilityMap[mid];
 
-      // SIKKERHETS-UPPDATERING v2.3: Vi fyrer av alle kjente metoder samtidig for å garantere treff
       if (hide && hide.length > 0) {
         const targetIds = { modelObjectIds: [{ modelId: mid, objectRuntimeIds: hide }] };
         
-        // Metode A: Kombinert tilstand
         if(API.viewer.setObjectState) {
           await API.viewer.setObjectState(targetIds, { hidden: true, visibility: "hidden", opacity: 0 });
         }
-        // Metode B: Direktemetode hvis den finnes i denne Connect-versjonen
         if(API.viewer.setVisibility) {
           try { await API.viewer.setVisibility(targetIds, false); } catch(e){}
         }
@@ -356,11 +439,10 @@ async function executeFilter() {
       }
     }
 
-    // Tving fram en oppdatering/refresh av 3D-scenen til slutt hvis funksjonen støttes
     if (API.viewer.refresh) { try { await API.viewer.refresh(); } catch(e){} }
     if (API.viewer.redraw) { try { await API.viewer.redraw(); } catch(e){} }
 
-    setStatus(`✅ Filtrering fullført. Viser ${shownTotal} objekter, skjulte ${hiddenTotal}.`, 'ok');
+    setStatus(`✅ Filtrering fullført. Viser ${shownTotal} noder, skjulte ${hiddenTotal}.`, 'ok');
   } catch (e) {
     setStatus('❌ Feil under filtrering: ' + e.message, 'error');
   }
