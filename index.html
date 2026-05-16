@@ -2,7 +2,7 @@
 <html lang="nb">
 <head>
   <meta charset="UTF-8"/>
-  <title>BIM Multi-Filtrering v2.6</title>
+  <title>BIM Multi-Filtrering v2.7</title>
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   
   <script src="https://components.connect.trimble.com/trimble-connect-workspace-api/index.js"></script>
@@ -67,8 +67,8 @@
 
 <header>
   <div class="header-title">
-    <h1>BIM Multi-Filtrering</h1>
-    <p>Kombiner filtre for MMI, Underdisiplin, PNS og Bruksstatus (Skjuler linjegeometri)</p>
+    <h1>BIM Multi-Filtrering v2.7</h1>
+    <p>Kombiner filtre for MMI, Underdisiplin, PNS og Bruksstatus</p>
   </div>
   <button class="btn btn-ghost" id="btnLoad" disabled>Hent modeller</button>
   <button class="btn btn-primary" id="btnFilter" disabled>🔍 Filtrer i 3D</button>
@@ -396,7 +396,7 @@ async function executeFilter() {
   });
 
   try {
-    setStatus('⏳ Oppdaterer 3D-visning og knuser linjegeometri...');
+    setStatus('⏳ Oppdaterer 3D-visning...');
 
     let hiddenTotal = 0;
     let shownTotal = 0;
@@ -404,44 +404,26 @@ async function executeFilter() {
     for (const mid of Object.keys(visibilityMap)) {
       const { show, hide } = visibilityMap[mid];
 
-      // NY LINJEGEOMETRI-FIKS: Tvinger "ghost: false" for å hindre at tråder/linjer forblir transparente spøkelser
+      // DEN STORE FIKSEN: Bruker KUN visible: false. Dette forteller 3D-motoren
+      // at objektet skal fjernes fra både rendering og museklikk-sjekker.
       if (hide && hide.length > 0) {
         const targetIds = { modelObjectIds: [{ modelId: mid, objectRuntimeIds: hide }] };
-        
         if(API.viewer.setObjectState) {
-          // ghost: false skrur HELT av den transparente gjennomsiktigheten på filtrerte objekter
-          await API.viewer.setObjectState(targetIds, { hidden: true, visibility: "hidden", opacity: 0, ghost: false });
-        }
-        if(API.viewer.setVisibility) {
-          try { await API.viewer.setVisibility(targetIds, false); } catch(e){}
+          await API.viewer.setObjectState(targetIds, { visible: false });
         }
         hiddenTotal += hide.length;
       }
       
       if (show && show.length > 0) {
         const targetIds = { modelObjectIds: [{ modelId: mid, objectRuntimeIds: show }] };
-        
         if(API.viewer.setObjectState) {
-          await API.viewer.setObjectState(targetIds, { hidden: false, visibility: "visible", opacity: 255 });
-        }
-        if(API.viewer.setVisibility) {
-          try { await API.viewer.setVisibility(targetIds, true); } catch(e){}
+          await API.viewer.setObjectState(targetIds, { visible: true });
         }
         shownTotal += show.length;
       }
     }
 
-    // Bruker isolate() på toppen av dette som et ekstra filter hvis tilgjengelig
-    if (API.viewer.isolate && hasActiveFilters) {
-      const isolateObjects = Object.keys(visibilityMap).map(mid => ({
-        modelId: mid,
-        objectRuntimeIds: visibilityMap[mid].show
-      })).filter(m => m.objectRuntimeIds.length > 0);
-      try { await API.viewer.isolate({ modelObjectIds: isolateObjects }); } catch(e){}
-    }
-
     if (API.viewer.refresh) { try { await API.viewer.refresh(); } catch(e){} }
-    if (API.viewer.redraw) { try { await API.viewer.redraw(); } catch(e){} }
 
     setStatus(`✅ Filtrering fullført. Viser ${shownTotal} noder, skjulte ${hiddenTotal}.`, 'ok');
   } catch (e) {
@@ -455,8 +437,6 @@ async function resetFilter() {
   try {
     setStatus('⏳ Nullstiller visning...');
     
-    if (API.viewer.isolate) { try { await API.viewer.isolate(null); } catch(e){} }
-
     const modelsToReset = {};
     modelObjectsData.forEach(obj => {
       if (!modelsToReset[obj.modelId]) modelsToReset[obj.modelId] = [];
@@ -466,13 +446,9 @@ async function resetFilter() {
     for (const mid of Object.keys(modelsToReset)) {
       if (modelsToReset[mid].length > 0) {
         const targetIds = { modelObjectIds: [{ modelId: mid, objectRuntimeIds: modelsToReset[mid] }] };
-        
         if (API.viewer.setObjectState) {
-          // Tilbakestiller ghost til standard
-          await API.viewer.setObjectState(targetIds, { hidden: false, visibility: "visible", opacity: 255, ghost: true, color: "reset" });
-        }
-        if (API.viewer.setVisibility) {
-          try { await API.viewer.setVisibility(targetIds, true); } catch(e){}
+          // Her tilbakestiller vi alle manipulerte visnings-egenskaper til standard
+          await API.viewer.setObjectState(targetIds, { visible: "reset", opacity: "reset", color: "reset" });
         }
       }
     }
