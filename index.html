@@ -2,7 +2,7 @@
 <html lang="nb">
 <head>
   <meta charset="UTF-8"/>
-  <title>BIM Avansert Multi-Filtrering v1.0</title>
+  <title>BIM Avansert Multi-Filtrering v2.0</title>
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   
   <script src="https://components.connect.trimble.com/trimble-connect-workspace-api/index.js"></script>
@@ -49,9 +49,8 @@
 
     main { flex: 1; overflow-y: auto; padding: 16px; display: flex; flex-direction: column; gap: 14px; }
     
-    /* Det 4-delte rutenettet */
     .filter-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 16px; width: 100%; }
-    @media (max-width: 600px) { .filter-grid { grid-template-columns: 1fr; } } /* Enkeltkolonne på smale skjermer */
+    @media (max-width: 600px) { .filter-grid { grid-template-columns: 1fr; } }
 
     .panel { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 14px; display: flex; flex-direction: column; gap: 10px; }
     .panel h3 { font-size: 13px; font-weight: 700; color: var(--blue); margin-bottom: 4px; }
@@ -79,7 +78,7 @@
 
 <div id="controlBar">
   <div class="select-group">
-    <label>Velg modell:</label>
+    <label>Velg kilde/modell:</label>
     <select id="modelSelect" disabled><option value="">– Laster... –</option></select>
   </div>
 </div>
@@ -113,9 +112,8 @@
 <script>
 let API = null;
 let allModels = [];
-let modelObjectsData = []; // Lagrer objektene og deres 4 egenskapsverdier
+let modelObjectsData = []; // Lagrer objektene og deres egenskapsverdier
 
-// Definerer de nøyaktige egenskapsnavnene vi ser etter
 const PROP_KEYS = {
   mmi: "MMI",
   underdisiplin: "Underdisiplin",
@@ -139,13 +137,31 @@ async function loadModels(){
   setStatus('⏳ Henter modellinformasjon...');
   try {
     const objs = await API.viewer.getObjects();
+    
+    // Rettet feil: Henter m.name eller m.title for å unngå "Ukjent modell"
     allModels = (objs || []).map(m => ({
       id: m.modelId || m.modelid,
-      name: m.name || 'Ukjent modell',
+      name: m.modelName || m.name || m.title || 'Navnløs modell',
       objectIds: (m.objects || []).map(o => o.id || o.objectRuntimeId).filter(id => id != null)
     })).filter(m => m.objectIds.length > 0);
 
-    $('modelSelect').innerHTML = allModels.map(m => `<option value="${m.id}">${m.name} (${m.objectIds.length} obj)</option>`).join('');
+    if (allModels.length === 0) {
+      setStatus('⚠️ Ingen objekter funnet i de innlastede modellene.');
+      return;
+    }
+
+    // Bygg nedtrekksmenyen med spesialvalg + de spesifikke modellene
+    let optionsHtml = `
+      <option value="ALL_MODELS">🌍 Alle modeller (${allModels.reduce((acc, m) => acc + m.objectIds.length, 0)} obj)</option>
+      <option value="SELECTED_OBJECTS">🎯 Valgte objekter (krever markering i 3D)</option>
+      <hr>
+    `;
+    
+    allModels.forEach(m => {
+      optionsHtml += `<option value="${m.id}">📦 ${m.name} (${m.objectIds.length} obj)</option>`;
+    });
+
+    $('modelSelect').innerHTML = optionsHtml;
     $('modelSelect').disabled = false;
     
     await analyzeModelProperties();
@@ -153,54 +169,96 @@ async function loadModels(){
 }
 
 async function analyzeModelProperties() {
-  const mid = $('modelSelect').value;
-  if (!mid) return;
+  const mode = $('modelSelect').value;
+  if (!mode) return;
 
-  const model = allModels.find(m => m.id === mid);
   modelObjectsData = [];
-  
-  // Sorteringslister for unike verdier i hver kategori
   const uniqueSets = { mmi: new Set(), underdisiplin: new Set(), pns: new Set(), bruksstatus: new Set() };
-  const CHUNK = 200;
+  let chunksToProcess = [];
 
-  for (let i = 0; i < model.objectIds.length; i += CHUNK) {
-    const propsArr = await API.viewer.getObjectProperties(mid, model.objectIds.slice(i, i + CHUNK));
+  setStatus('⏳ Forbereder analyse...');
+
+  if (mode === "SELECTED_OBJECTS") {
+    // Hent ut kun de objektene brukeren har valgt i 3D-vieweren akkurat nå
+    const selection = await API.viewer.getSelection();
+    if (!selection || selection.length === 0) {
+      setStatus('⚠️ Ingen objekter er valgt i 3D-vieweren. Velg objekter først, og klikk "Hent modeller" på nytt.');
+      $('filterGrid').style.display = 'none';
+      $('emptyState').style.display = 'block';
+      $('emptyState').textContent = 'Ingen objekter er valgt i 3D-vieweren. Marker objekter i modellen og last inn på nytt.';
+      return;
+    }
     
-    propsArr.forEach(o => {
-      // Standardverdi hvis egenskapen mangler helt på objektet
-      const objData = {
-        runtimeId: o.id || o.objectRuntimeId,
-        mmi: "Mangler verdi",
-        underdisiplin: "Mangler verdi",
-        pns: "Mangler verdi",
-        bruksstatus: "Mangler verdi"
-      };
-      
-      // Gå igjennom objektets egenskapsgrupper og finn de 4 verdiene
-      (o.properties || []).forEach(g => {
-        (g.properties || []).forEach(p => {
-          const val = p.value ? p.value.toString().trim() : "";
-          if (!val) return;
-
-          if (p.name === PROP_KEYS.mmi) objData.mmi = val;
-          if (p.name === PROP_KEYS.underdisiplin) objData.underdisiplin = val;
-          if (p.name === PROP_KEYS.pns) objData.pns = val;
-          if (p.name === PROP_KEYS.bruksstatus) objData.bruksstatus = val;
-        });
-      });
-
-      // Legg til i settene for unike verdier
-      uniqueSets.mmi.add(objData.mmi);
-      uniqueSets.underdisiplin.add(objData.underdisiplin);
-      uniqueSets.pns.add(objData.pns);
-      uniqueSets.bruksstatus.add(objData.bruksstatus);
-
-      modelObjectsData.push(objData);
+    // Grupper valgte objekter per modell
+    selection.forEach(sel => {
+      const mid = sel.modelId || sel.modelid;
+      const ids = (sel.objectIds || sel.objectRuntimeIds || []);
+      if (mid && ids.length > 0) {
+        chunksToProcess.push({ modelId: mid, objectIds: ids });
+      }
     });
-    setStatus(`⏳ Skanner egenskaper... ${Math.min(i+CHUNK, model.objectIds.length)} / ${model.objectIds.length}`);
+  } else if (mode === "ALL_MODELS") {
+    // Legg til alle objekter fra alle modeller i prosesseringslisten
+    allModels.forEach(m => {
+      chunksToProcess.push({ modelId: m.id, objectIds: m.objectIds });
+    });
+  } else {
+    // En spesifikk modell er valgt
+    const targetModel = allModels.find(m => m.id === mode);
+    if (targetModel) {
+      chunksToProcess.push({ modelId: targetModel.id, objectIds: targetModel.objectIds });
+    }
   }
 
-  // Generer avmerkingsbokser for de fire listene
+  // Kjør skanningen i bolker (chunks) på tvers av forberedte data
+  const CHUNK_SIZE = 200;
+  let totalObjectsCount = chunksToProcess.reduce((acc, c) => acc + c.objectIds.length, 0);
+  let processedCount = 0;
+
+  for (const chunkGroup of chunksToProcess) {
+    const mid = chunkGroup.modelId;
+    const ids = chunkGroup.objectIds;
+
+    for (let i = 0; i < ids.length; i += CHUNK_SIZE) {
+      const currentBatch = ids.slice(i, i + CHUNK_SIZE);
+      const propsArr = await API.viewer.getObjectProperties(mid, currentBatch);
+      
+      propsArr.forEach(o => {
+        const objData = {
+          modelId: mid,
+          runtimeId: o.id || o.objectRuntimeId,
+          mmi: "Mangler verdi",
+          underdisiplin: "Mangler verdi",
+          pns: "Mangler verdi",
+          bruksstatus: "Mangler verdi"
+        };
+        
+        (o.properties || []).forEach(g => {
+          (g.properties || []).forEach(p => {
+            const val = p.value ? p.value.toString().trim() : "";
+            if (!val) return;
+
+            if (p.name === PROP_KEYS.mmi) objData.mmi = val;
+            if (p.name === PROP_KEYS.underdisiplin) objData.underdisiplin = val;
+            if (p.name === PROP_KEYS.pns) objData.pns = val;
+            if (p.name === PROP_KEYS.bruksstatus) objData.bruksstatus = val;
+          });
+        });
+
+        uniqueSets.mmi.add(objData.mmi);
+        uniqueSets.underdisiplin.add(objData.underdisiplin);
+        uniqueSets.pns.add(objData.pns);
+        uniqueSets.bruksstatus.add(objData.bruksstatus);
+
+        modelObjectsData.push(objData);
+      });
+
+      processedCount += currentBatch.length;
+      setStatus(`⏳ Skanner egenskaper... ${processedCount} / ${totalObjectsCount}`);
+    }
+  }
+
+  // Generer sjekkboksene i UI
   renderFilterBox('box_mmi', Array.from(uniqueSets.mmi).sort(), 'mmi');
   renderFilterBox('box_underdisiplin', Array.from(uniqueSets.underdisiplin).sort(), 'underdisiplin');
   renderFilterBox('box_pns', Array.from(uniqueSets.pns).sort(), 'pns');
@@ -210,7 +268,7 @@ async function analyzeModelProperties() {
   $('emptyState').style.display = 'none';
   $('btnFilter').disabled = false;
   $('btnReset').disabled = false;
-  setStatus('✅ Egenskaper analysert. Klar til å filtrere.', 'ok');
+  setStatus(`✅ Analyse ferdig. Hentet data fra ${modelObjectsData.length} objekter.`, 'ok');
 }
 
 function renderFilterBox(elementId, values, categoryKey) {
@@ -220,8 +278,6 @@ function renderFilterBox(elementId, values, categoryKey) {
     return;
   }
 
-  // Genererer sjekkboksene. Legg merke til at de IKKE er krysset av ("checked") som standard nå, 
-  // slik at brukeren aktivt velger hva de vil spisse søket mot.
   box.innerHTML = values.map(val => `
     <label class="filter-item">
       <input type="checkbox" value="${val}" data-cat="${categoryKey}" class="filter-checkbox">
@@ -232,75 +288,79 @@ function renderFilterBox(elementId, values, categoryKey) {
 
 async function executeFilter() {
   if (!API || !modelObjectsData.length) return;
-  const mid = $('modelSelect').value;
   
-  // Finn ut hva brukeren faktisk har valgt i de 4 forskjellige kategoriene
+  // Hent valgte sjekkbokser
   const activeFilters = { mmi: new Set(), underdisiplin: new Set(), pns: new Set(), bruksstatus: new Set() };
-  
   document.querySelectorAll('.filter-checkbox:checked').forEach(cb => {
     const cat = cb.getAttribute('data-cat');
     activeFilters[cat].add(cb.value);
   });
 
-  const objectsToHide = [];
-  const objectsToShow = [];
+  // Grupperer hvilke runtimeIds som skal skjules eller vises per modellId
+  const visibilityMap = {};
 
-  // Filtreringslogikk (AND mellom kategorier, OR innad i samme kategori)
   modelObjectsData.forEach(obj => {
-    
-    // Hvis brukeren har valgt noe i en kategori, MÅ objektet matche en av verdiene (AND).
-    // Hvis brukeren ikke har valgt noe i en kategori, slipper objektet igjennom på den egenskapen.
+    if (!visibilityMap[obj.modelId]) {
+      visibilityMap[obj.modelId] = { show: [], hide: [] };
+    }
+
     const matchMMI = activeFilters.mmi.size === 0 || activeFilters.mmi.has(obj.mmi);
     const matchUnder = activeFilters.underdisiplin.size === 0 || activeFilters.underdisiplin.has(obj.underdisiplin);
     const matchPNS = activeFilters.pns.size === 0 || activeFilters.pns.has(obj.pns);
     const matchStatus = activeFilters.bruksstatus.size === 0 || activeFilters.bruksstatus.has(obj.bruksstatus);
 
-    // Objektet må oppfylle kravene i samtlige fire deler
     if (matchMMI && matchUnder && matchPNS && matchStatus) {
-      objectsToShow.push(obj.runtimeId);
+      visibilityMap[obj.modelId].show.push(obj.runtimeId);
     } else {
-      objectsToHide.push(obj.runtimeId);
+      visibilityMap[obj.modelId].hide.push(obj.runtimeId);
     }
   });
 
   try {
     setStatus('⏳ Oppdaterer 3D-visning...');
 
-    // Skjul alle objekter som feilet kravene
-    if (objectsToHide.length > 0) {
-      await API.viewer.setObjectState({
-        modelObjectIds: [{ modelId: mid, objectRuntimeIds: objectsToHide }]
-      }, { hidden: true });
+    // Utfør synlighetsendring for hver modell separat (kreves av API-et)
+    for (const mid of Object.keys(visibilityMap)) {
+      const { show, hide } = visibilityMap[mid];
+
+      if (hide.length > 0) {
+        await API.viewer.setObjectState({
+          modelObjectIds: [{ modelId: mid, objectRuntimeIds: hide }]
+        }, { hidden: true });
+      }
+      if (show.length > 0) {
+        await API.viewer.setObjectState({
+          modelObjectIds: [{ modelId: mid, objectRuntimeIds: show }]
+        }, { hidden: false });
+      }
     }
 
-    // Vis objektene som slapp gjennom kravene
-    if (objectsToShow.length > 0) {
-      await API.viewer.setObjectState({
-        modelObjectIds: [{ modelId: mid, objectRuntimeIds: objectsToShow }]
-      }, { hidden: false });
-    }
-
-    setStatus(`✅ Suksess! Viser ${objectsToShow.length} objekter. Skjulte ${objectsToHide.length}.`, 'ok');
+    setStatus(`✅ Filtrering utført.`, 'ok');
   } catch (e) {
     setStatus('❌ Feil under filtrering: ' + e.message);
   }
 }
 
 async function resetFilter() {
-  if (!API) return;
-  const mid = $('modelSelect').value;
+  if (!API || !modelObjectsData.length) return;
 
   try {
     setStatus('⏳ Nullstiller visning...');
     
-    // Vis samtlige objekter i 3D-vieweren igjen
-    await API.viewer.setObjectState({
-      modelObjectIds: [{ modelId: mid, objectRuntimeIds: modelObjectsData.map(o => o.runtimeId) }]
-    }, { hidden: false });
+    // Grupper etter modellId for å slå på alt igjen
+    const modelsToReset = {};
+    modelObjectsData.forEach(obj => {
+      if (!modelsToReset[obj.modelId]) modelsToReset[obj.modelId] = [];
+      modelsToReset[obj.modelId].push(obj.runtimeId);
+    });
 
-    // Tømmer alle avmerkingsbokser
+    for (const mid of Object.keys(modelsToReset)) {
+      await API.viewer.setObjectState({
+        modelObjectIds: [{ modelId: mid, objectRuntimeIds: modelsToReset[mid] }]
+      }, { hidden: false });
+    }
+
     document.querySelectorAll('.filter-checkbox').forEach(cb => cb.checked = false);
-
     setStatus('✅ Filter nullstilt. Alle objekter er synlige.', 'ok');
   } catch (e) {
     setStatus('❌ Feil ved nullstilling: ' + e.message);
