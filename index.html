@@ -2,7 +2,7 @@
 <html lang="nb">
 <head>
   <meta charset="UTF-8"/>
-  <title>BIM Multi-Filtrering v3.1</title>
+  <title>BIM Multi-Filtrering v3.2</title>
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   
   <script src="https://components.connect.trimble.com/trimble-connect-workspace-api/index.js"></script>
@@ -67,7 +67,7 @@
 
 <header>
   <div class="header-title">
-    <h1>BIM Multi-Filtrering v3.1</h1>
+    <h1>BIM Multi-Filtrering v3.2</h1>
     <p>Kombiner filtre for MMI, Underdisiplin, PNS og Bruksstatus</p>
   </div>
   <button class="btn btn-ghost" id="btnLoad" disabled>Hent modeller</button>
@@ -112,6 +112,9 @@ let API = null;
 let allModels = [];
 let modelObjectsData = []; 
 
+// Systemnoder som IKKE skal manipuleres direkte av filteret
+const IGNORE = new Set(['IFCPROJECT','IFCSITE','IFCBUILDING','IFCBUILDINGSTOREY','IFCSPACE','IFCZONE','IFCGROUP','IFCSYSTEM']);
+
 const PROP_KEYS = {
   mmi: "MMI",
   underdisiplin: "Underdisiplin",
@@ -122,6 +125,19 @@ const PROP_KEYS = {
 const $ = id => document.getElementById(id);
 const setStatus = (m, c='') => { $('statusBar').textContent = m; $('statusBar').className = c; };
 const lastPathPart = (v) => (v || '').split('/').pop().split('\\').pop();
+
+// Lese av korrekt IFC-type basert på egenskapene i Trimble Connect
+function getIfcType(obj){
+    const s = (obj.class || obj.className || obj.type || obj.ifcType || obj.ifcEntity || '').toString().trim().toUpperCase();
+    if (s && s.startsWith('IFC')) return s;
+    for (const ps of (obj.properties || [])) {
+        for (const p of (ps.properties || [])) {
+            const v = (p.value || '').toString().trim().toUpperCase();
+            if (v.startsWith('IFC')) return v;
+        }
+    }
+    return '';
+}
 
 async function connect(){
   try {
@@ -178,7 +194,6 @@ async function loadModels(){
   } catch(e) { setStatus('❌ Feil ved henting av modeller: ' + e.message, 'error'); }
 }
 
-// Skanner dypere ned i objekt-hierarkiet for å fange proxy-geometri
 function getAllRuntimeIds(obj) {
   let ids = [];
   const mainId = obj.id || obj.objectRuntimeId;
@@ -278,13 +293,17 @@ async function analyzeModelProperties() {
       
       propsArr.forEach(o => {
         const currentId = o.id || o.objectRuntimeId;
+        const ifcType = getIfcType(o);
+        const isIgnored = IGNORE.has(ifcType); // ⚠️ Nytt: Sjekker om noden er en "mappe"
+
         const objData = {
           modelId: mid,
           runtimeId: currentId,
           mmi: "",
           underdisiplin: "",
           pns: "",
-          bruksstatus: ""
+          bruksstatus: "",
+          isIgnored: isIgnored // Lagrer statusen 
         };
         
         (o.properties || []).forEach(g => {
@@ -327,12 +346,15 @@ async function analyzeModelProperties() {
       obj.pns = obj.pns || currentObj.pns || "Mangler verdi";
       obj.bruksstatus = obj.bruksstatus || currentObj.bruksstatus || "Mangler verdi";
 
-      uniqueSets.mmi.add(obj.mmi);
-      uniqueSets.underdisiplin.add(obj.underdisiplin);
-      uniqueSets.pns.add(obj.pns);
-      uniqueSets.bruksstatus.add(obj.bruksstatus);
+      // ⚠️ Den store endringen: Legger kun til fysiske objekter for filtrering, og ignorerer IFCBUILDING/IFCPROJECT etc.
+      if (!obj.isIgnored) {
+        uniqueSets.mmi.add(obj.mmi);
+        uniqueSets.underdisiplin.add(obj.underdisiplin);
+        uniqueSets.pns.add(obj.pns);
+        uniqueSets.bruksstatus.add(obj.bruksstatus);
 
-      modelObjectsData.push(obj);
+        modelObjectsData.push(obj);
+      }
     });
   }
 
@@ -402,9 +424,6 @@ async function executeFilter() {
     for (const mid of Object.keys(visibilityMap)) {
       const { show, hide } = visibilityMap[mid];
 
-      // KORREKT IMPLEMENTERING (v3.1):
-      // Vi bruker "visible: false" for å fryse/skjule objektene.
-      // Vi bruker "visible: 'reset'" for å tine opp/vise objektene, siden 'true' var bugget!
       if (hide && hide.length > 0) {
         const targetIds = { modelObjectIds: [{ modelId: mid, objectRuntimeIds: hide }] };
         if(API.viewer.setObjectState) {
@@ -446,7 +465,6 @@ async function resetFilter() {
       if (modelsToReset[mid].length > 0) {
         const targetIds = { modelObjectIds: [{ modelId: mid, objectRuntimeIds: modelsToReset[mid] }] };
         if (API.viewer.setObjectState) {
-          // Garanterer at fargene består når alt blir fryst opp
           await API.viewer.setObjectState(targetIds, { visible: "reset" });
         }
       }
