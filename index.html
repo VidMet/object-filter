@@ -2,7 +2,7 @@
 <html lang="nb">
 <head>
   <meta charset="UTF-8"/>
-  <title>BIM Multi-Filtrering v2.7</title>
+  <title>BIM Multi-Filtrering v2.8</title>
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   
   <script src="https://components.connect.trimble.com/trimble-connect-workspace-api/index.js"></script>
@@ -67,7 +67,7 @@
 
 <header>
   <div class="header-title">
-    <h1>BIM Multi-Filtrering v2.7</h1>
+    <h1>BIM Multi-Filtrering v2.8</h1>
     <p>Kombiner filtre for MMI, Underdisiplin, PNS og Bruksstatus</p>
   </div>
   <button class="btn btn-ghost" id="btnLoad" disabled>Hent modeller</button>
@@ -90,17 +90,14 @@
       <h3>Del 1: MMI-nivå</h3>
       <div class="filter-box" id="box_mmi"></div>
     </div>
-    
     <div class="panel">
       <h3>Del 2: Fagområde (Underdisiplin)</h3>
       <div class="filter-box" id="box_underdisiplin"></div>
     </div>
-    
     <div class="panel">
       <h3>Del 3: PNS Kode</h3>
       <div class="filter-box" id="box_pns"></div>
     </div>
-    
     <div class="panel">
       <h3>Del 4: Bruksstatus</h3>
       <div class="filter-box" id="box_bruksstatus"></div>
@@ -404,12 +401,12 @@ async function executeFilter() {
     for (const mid of Object.keys(visibilityMap)) {
       const { show, hide } = visibilityMap[mid];
 
-      // DEN STORE FIKSEN: Bruker KUN visible: false. Dette forteller 3D-motoren
-      // at objektet skal fjernes fra både rendering og museklikk-sjekker.
+      // KUN standard "hidden: true/false"
+      // Siden vi nå skaffer IDene til barnenodene (geometrien), er dette alt som kreves.
       if (hide && hide.length > 0) {
         const targetIds = { modelObjectIds: [{ modelId: mid, objectRuntimeIds: hide }] };
         if(API.viewer.setObjectState) {
-          await API.viewer.setObjectState(targetIds, { visible: false });
+          await API.viewer.setObjectState(targetIds, { hidden: true });
         }
         hiddenTotal += hide.length;
       }
@@ -417,7 +414,7 @@ async function executeFilter() {
       if (show && show.length > 0) {
         const targetIds = { modelObjectIds: [{ modelId: mid, objectRuntimeIds: show }] };
         if(API.viewer.setObjectState) {
-          await API.viewer.setObjectState(targetIds, { visible: true });
+          await API.viewer.setObjectState(targetIds, { hidden: false });
         }
         shownTotal += show.length;
       }
@@ -447,8 +444,9 @@ async function resetFilter() {
       if (modelsToReset[mid].length > 0) {
         const targetIds = { modelObjectIds: [{ modelId: mid, objectRuntimeIds: modelsToReset[mid] }] };
         if (API.viewer.setObjectState) {
-          // Her tilbakestiller vi alle manipulerte visnings-egenskaper til standard
-          await API.viewer.setObjectState(targetIds, { visible: "reset", opacity: "reset", color: "reset" });
+          // BARE "hidden: false" for å skru på igjen. 
+          // Vi fjerner `color: "reset"` så du beholder de originale IFC-fargene!
+          await API.viewer.setObjectState(targetIds, { hidden: false });
         }
       }
     }
@@ -456,7 +454,7 @@ async function resetFilter() {
     if (API.viewer.refresh) { try { await API.viewer.refresh(); } catch(e){} }
 
     document.querySelectorAll('.filter-checkbox').forEach(cb => cb.checked = false);
-    setStatus('✅ Filter opphevet. Hele modellen er synlig.', 'ok');
+    setStatus('✅ Filter opphevet. Hele modellen er synlig med farger.', 'ok');
   } catch (e) {
     setStatus('❌ Feil ved nullstilling: ' + e.message, 'error');
   }
