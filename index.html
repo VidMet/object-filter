@@ -2,7 +2,7 @@
 <html lang="nb">
 <head>
   <meta charset="UTF-8"/>
-  <title>BIM Multi-Filtrering v3.0</title>
+  <title>BIM Multi-Filtrering v3.1</title>
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   
   <script src="https://components.connect.trimble.com/trimble-connect-workspace-api/index.js"></script>
@@ -67,7 +67,7 @@
 
 <header>
   <div class="header-title">
-    <h1>BIM Multi-Filtrering v3.0</h1>
+    <h1>BIM Multi-Filtrering v3.1</h1>
     <p>Kombiner filtre for MMI, Underdisiplin, PNS og Bruksstatus</p>
   </div>
   <button class="btn btn-ghost" id="btnLoad" disabled>Hent modeller</button>
@@ -402,8 +402,9 @@ async function executeFilter() {
     for (const mid of Object.keys(visibilityMap)) {
       const { show, hide } = visibilityMap[mid];
 
-      // KORREKT IMPLEMENTERING AV SYNLIGHET (v3.0)
-      // Ved å bruke "visible: false" forteller vi 3D-motoren at objektet skal skjules fullstendig.
+      // KORREKT IMPLEMENTERING (v3.1):
+      // Vi bruker "visible: false" for å fryse/skjule objektene.
+      // Vi bruker "visible: 'reset'" for å tine opp/vise objektene, siden 'true' var bugget!
       if (hide && hide.length > 0) {
         const targetIds = { modelObjectIds: [{ modelId: mid, objectRuntimeIds: hide }] };
         if(API.viewer.setObjectState) {
@@ -415,7 +416,7 @@ async function executeFilter() {
       if (show && show.length > 0) {
         const targetIds = { modelObjectIds: [{ modelId: mid, objectRuntimeIds: show }] };
         if(API.viewer.setObjectState) {
-          await API.viewer.setObjectState(targetIds, { visible: true });
+          await API.viewer.setObjectState(targetIds, { visible: "reset" });
         }
         shownTotal += show.length;
       }
@@ -445,7 +446,7 @@ async function resetFilter() {
       if (modelsToReset[mid].length > 0) {
         const targetIds = { modelObjectIds: [{ modelId: mid, objectRuntimeIds: modelsToReset[mid] }] };
         if (API.viewer.setObjectState) {
-          // "reset" tvinger modellen tilbake til slik den var i utgangspunktet (f.eks original IFC-synlighet)
+          // Garanterer at fargene består når alt blir fryst opp
           await API.viewer.setObjectState(targetIds, { visible: "reset" });
         }
       }
