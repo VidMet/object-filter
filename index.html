@@ -2,7 +2,7 @@
 <html lang="nb">
 <head>
   <meta charset="UTF-8"/>
-  <title>BIM Avansert Filtrering v4.4</title>
+  <title>BIM Avansert Filtrering v4.5</title>
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   
   <script src="https://components.connect.trimble.com/trimble-connect-workspace-api/index.js"></script>
@@ -71,8 +71,8 @@
 
 <header>
   <div class="header-title">
-    <h1>BIM Avansert Filtrering v4.4</h1>
-    <p>Dynamisk flervalgsfiltrering med Solid API Sending</p>
+    <h1>BIM Avansert Filtrering v4.5</h1>
+    <p>Dynamisk flervalgsfiltrering (Med streng Geometri-fanger)</p>
   </div>
   <button class="btn btn-ghost" id="btnLoad" disabled>Hent modeller</button>
   <button class="btn btn-primary" id="btnFilter" disabled>🔍 Filtrer i 3D</button>
@@ -120,6 +120,7 @@ let allDiscoveredProperties = new Set();
 
 const FIXED_PROPS = ["MMI", "Underdisiplin", "PNS Kode", "Bruksstatus", "Objektklasse", "Objekttype", "Materiale"];
 const IGNORE = new Set(['IFCPROJECT','IFCSITE','IFCBUILDING','IFCBUILDINGSTOREY']);
+const API_CHUNK_LIMIT = 3000; // Optimalisert for store datasett
 
 const $ = id => document.getElementById(id);
 const setStatus = (m, c='') => { $('statusBar').textContent = m; $('statusBar').className = c; };
@@ -267,46 +268,51 @@ async function analyzeModelProperties() {
       });
     }
 
-    const tempObjectsData = [];
+    // V4.5 FIKS: Vi forhåndsregistrerer ALLE IDs slik at ingen geometrinoder blir glemt
+    const tempObjectsDataMap = new Map();
+    ids.forEach(id => {
+      tempObjectsDataMap.set(id, {
+         modelId: mid,
+         runtimeId: id,
+         isIgnored: false,
+         props: {}
+      });
+    });
 
     for (let i = 0; i < ids.length; i += CHUNK_SIZE) {
       const currentBatch = ids.slice(i, i + CHUNK_SIZE);
       const propsArr = await API.viewer.getObjectProperties(mid, currentBatch);
       
       propsArr.forEach(o => {
-        const isIgnored = IGNORE.has(getIfcType(o));
-        const objData = {
-          modelId: mid,
-          runtimeId: o.id || o.objectRuntimeId,
-          isIgnored: isIgnored,
-          props: {} 
-        };
-        
-        (o.properties || []).forEach(g => {
-          (g.properties || []).forEach(p => {
-            const val = p.value ? p.value.toString().trim() : "";
-            if (val) {
-              objData.props[p.name.trim()] = val;
-              if (!isIgnored) allDiscoveredProperties.add(p.name.trim());
-            }
+        const rId = o.id || o.objectRuntimeId;
+        if(tempObjectsDataMap.has(rId)) {
+          const objData = tempObjectsDataMap.get(rId);
+          objData.isIgnored = IGNORE.has(getIfcType(o));
+          
+          (o.properties || []).forEach(g => {
+            (g.properties || []).forEach(p => {
+              const val = p.value ? p.value.toString().trim() : "";
+              if (val) {
+                objData.props[p.name.trim()] = val;
+                if (!objData.isIgnored) allDiscoveredProperties.add(p.name.trim());
+              }
+            });
           });
-        });
-
-        tempObjectsData.push(objData);
+        }
       });
 
       processedCount += currentBatch.length;
       setStatus(`⏳ Skanner egenskaper... ${processedCount} / ${totalObjectsCount}`);
     }
-
-    const parentLookup = new Map(tempObjectsData.map(d => [d.runtimeId, d]));
     
-    tempObjectsData.forEach(obj => {
-      let currentParentId = childToParentMap.get(obj.runtimeId);
+    // ARVELOGIKK
+    tempObjectsDataMap.forEach((obj, runtimeId) => {
+      let currentParentId = childToParentMap.get(runtimeId);
       let depth = 0;
       
-      while (currentParentId && parentLookup.has(currentParentId) && depth < 5) {
-        const parentObj = parentLookup.get(currentParentId);
+      // La tomme geometrinoder hente egenskaper fra foreldrene sine
+      while (currentParentId && tempObjectsDataMap.has(currentParentId) && depth < 5) {
+        const parentObj = tempObjectsDataMap.get(currentParentId);
         for (const key in parentObj.props) {
           if (!obj.props[key]) { 
             obj.props[key] = parentObj.props[key];
@@ -329,7 +335,7 @@ async function analyzeModelProperties() {
   $('emptyState').style.display = 'none';
   $('btnFilter').disabled = false;
   $('btnReset').disabled = false;
-  setStatus(`✅ Analyse ferdig. Klar til å filtrere.`, 'ok');
+  setStatus(`✅ Analyse ferdig. Hentet ${modelObjectsData.length} objekter og noder.`, 'ok');
 }
 
 function renderFixedPanels() {
@@ -423,15 +429,19 @@ async function executeFilter() {
     for (const mid of Object.keys(visibilityMap)) {
       const { show, hide } = visibilityMap[mid];
 
-      // KORREKT IMPLEMENTERING V4.4 - FJERNET CHUNKING
-      // Sender alle IDs til 3D-motoren i en eneste massiv payload
       if (hide.length > 0) {
-        await API.viewer.setObjectState({ modelObjectIds: [{ modelId: mid, objectRuntimeIds: hide }] }, { visible: false });
+        for (let i = 0; i < hide.length; i += API_CHUNK_LIMIT) {
+          const chunk = hide.slice(i, i + API_CHUNK_LIMIT);
+          await API.viewer.setObjectState({ modelObjectIds: [{ modelId: mid, objectRuntimeIds: chunk }] }, { visible: false });
+        }
         hiddenTotal += hide.length;
       }
       
       if (show.length > 0) {
-        await API.viewer.setObjectState({ modelObjectIds: [{ modelId: mid, objectRuntimeIds: show }] }, { visible: "reset" });
+        for (let i = 0; i < show.length; i += API_CHUNK_LIMIT) {
+          const chunk = show.slice(i, i + API_CHUNK_LIMIT);
+          await API.viewer.setObjectState({ modelObjectIds: [{ modelId: mid, objectRuntimeIds: chunk }] }, { visible: "reset" });
+        }
         shownTotal += show.length;
       }
     }
@@ -456,8 +466,11 @@ async function resetFilter() {
 
     for (const mid of Object.keys(modelsToReset)) {
       if (modelsToReset[mid].length > 0) {
-        // FJERNET CHUNKING HER OGSÅ
-        await API.viewer.setObjectState({ modelObjectIds: [{ modelId: mid, objectRuntimeIds: modelsToReset[mid] }] }, { visible: "reset" });
+        const allIds = modelsToReset[mid];
+        for (let i = 0; i < allIds.length; i += API_CHUNK_LIMIT) {
+          const chunk = allIds.slice(i, i + API_CHUNK_LIMIT);
+          await API.viewer.setObjectState({ modelObjectIds: [{ modelId: mid, objectRuntimeIds: chunk }] }, { visible: "reset" });
+        }
       }
     }
 
