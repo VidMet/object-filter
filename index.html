@@ -2,7 +2,7 @@
 <html lang="nb">
 <head>
   <meta charset="UTF-8"/>
-  <title>BIM Avansert Filtrering v4.7</title>
+  <title>BIM Avansert Filtrering v4.8</title>
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   
   <script src="https://components.connect.trimble.com/trimble-connect-workspace-api/index.js"></script>
@@ -72,8 +72,8 @@
 
 <header>
   <div class="header-title">
-    <h1>BIM Avansert Filtrering v4.7</h1>
-    <p>Ekte hierarki-arv og solid "Visible"-kommando</p>
+    <h1>BIM Avansert Filtrering v4.8</h1>
+    <p>Sikret overføring og ekte hierarki-arv</p>
   </div>
   <button class="btn btn-ghost" id="btnLoad" disabled>Hent modeller</button>
   <button class="btn btn-primary" id="btnFilter" disabled>🔍 Filtrer i 3D</button>
@@ -120,7 +120,9 @@ let modelObjectsData = [];
 let allDiscoveredProperties = new Set(); 
 
 const FIXED_PROPS = ["MMI", "Underdisiplin", "PNS Kode", "Bruksstatus", "Objektklasse", "Objekttype", "Materiale"];
-const IGNORE = new Set(['IFCPROJECT','IFCSITE','IFCBUILDING','IFCBUILDINGSTOREY']);
+// V4.8: Fjernet IFCSITE fra listen for å garantere at alt landskap fanges opp
+const IGNORE = new Set(['IFCPROJECT','IFCBUILDING','IFCBUILDINGSTOREY']);
+const API_CHUNK_LIMIT = 1000; // Mindre pakker for å sikre at vieweren rekker å tygge unna
 
 const $ = id => document.getElementById(id);
 const setStatus = (m, c='') => { $('statusBar').textContent = m; $('statusBar').className = c; };
@@ -428,20 +430,35 @@ async function executeFilter() {
   });
 
   try {
-    setStatus('⏳ Oppdaterer 3D-visning...');
+    setStatus('⏳ Oppdaterer 3D-visning. Dette kan ta et lite minutt for gigantiske modeller...');
     let hiddenTotal = 0; let shownTotal = 0;
+
+    // Fjern eventuell markering (seleksjon) slik at markerte objekter ikke tvinges til å være synlige
+    try { await API.viewer.setSelection({ modelObjectIds: [] }, "set"); } catch(e){}
 
     for (const mid of Object.keys(visibilityMap)) {
       const { show, hide } = visibilityMap[mid];
 
-      // KORREKT IMPLEMENTERING V4.7 (Massiv payload, uten oppdeling, med visible: false/reset)
       if (hide.length > 0) {
-        await API.viewer.setObjectState({ modelObjectIds: [{ modelId: mid, objectRuntimeIds: hide }] }, { visible: false });
+        for (let i = 0; i < hide.length; i += API_CHUNK_LIMIT) {
+          const chunk = hide.slice(i, i + API_CHUNK_LIMIT);
+          try {
+            await API.viewer.setObjectState({ modelObjectIds: [{ modelId: mid, objectRuntimeIds: chunk }] }, { hidden: true });
+            // V4.8 PUSTEPAUSE: Lar 3D-motoren tegne ferdig før vi mater den med 1000 nye objekter
+            await new Promise(r => setTimeout(r, 30)); 
+          } catch(e) { console.warn("Klarte ikke skjule chunk", e); }
+        }
         hiddenTotal += hide.length;
       }
       
       if (show.length > 0) {
-        await API.viewer.setObjectState({ modelObjectIds: [{ modelId: mid, objectRuntimeIds: show }] }, { visible: "reset" });
+        for (let i = 0; i < show.length; i += API_CHUNK_LIMIT) {
+          const chunk = show.slice(i, i + API_CHUNK_LIMIT);
+          try {
+            await API.viewer.setObjectState({ modelObjectIds: [{ modelId: mid, objectRuntimeIds: chunk }] }, { hidden: false });
+            await new Promise(r => setTimeout(r, 30));
+          } catch(e) { console.warn("Klarte ikke vise chunk", e); }
+        }
         shownTotal += show.length;
       }
     }
@@ -466,7 +483,14 @@ async function resetFilter() {
 
     for (const mid of Object.keys(modelsToReset)) {
       if (modelsToReset[mid].length > 0) {
-        await API.viewer.setObjectState({ modelObjectIds: [{ modelId: mid, objectRuntimeIds: modelsToReset[mid] }] }, { visible: "reset" });
+        const allIds = modelsToReset[mid];
+        for (let i = 0; i < allIds.length; i += API_CHUNK_LIMIT) {
+          const chunk = allIds.slice(i, i + API_CHUNK_LIMIT);
+          try {
+            await API.viewer.setObjectState({ modelObjectIds: [{ modelId: mid, objectRuntimeIds: chunk }] }, { hidden: false });
+            await new Promise(r => setTimeout(r, 30));
+          } catch(e) {}
+        }
       }
     }
 
