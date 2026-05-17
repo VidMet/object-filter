@@ -2,7 +2,7 @@
 <html lang="nb">
 <head>
   <meta charset="UTF-8"/>
-  <title>BIM Avansert Filtrering v4.3</title>
+  <title>BIM Avansert Filtrering v4.4</title>
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   
   <script src="https://components.connect.trimble.com/trimble-connect-workspace-api/index.js"></script>
@@ -71,8 +71,8 @@
 
 <header>
   <div class="header-title">
-    <h1>BIM Avansert Filtrering v4.3</h1>
-    <p>Dynamisk flervalgsfiltrering med API Chunking & Korrekt Frysing</p>
+    <h1>BIM Avansert Filtrering v4.4</h1>
+    <p>Dynamisk flervalgsfiltrering med Solid API Sending</p>
   </div>
   <button class="btn btn-ghost" id="btnLoad" disabled>Hent modeller</button>
   <button class="btn btn-primary" id="btnFilter" disabled>🔍 Filtrer i 3D</button>
@@ -120,7 +120,6 @@ let allDiscoveredProperties = new Set();
 
 const FIXED_PROPS = ["MMI", "Underdisiplin", "PNS Kode", "Bruksstatus", "Objektklasse", "Objekttype", "Materiale"];
 const IGNORE = new Set(['IFCPROJECT','IFCSITE','IFCBUILDING','IFCBUILDINGSTOREY']);
-const API_CHUNK_LIMIT = 500; 
 
 const $ = id => document.getElementById(id);
 const setStatus = (m, c='') => { $('statusBar').textContent = m; $('statusBar').className = c; };
@@ -418,27 +417,21 @@ async function executeFilter() {
   });
 
   try {
-    setStatus('⏳ Oppdaterer 3D-visning (dette kan ta noen sekunder for store modeller)...');
+    setStatus('⏳ Oppdaterer 3D-visning...');
     let hiddenTotal = 0; let shownTotal = 0;
 
     for (const mid of Object.keys(visibilityMap)) {
       const { show, hide } = visibilityMap[mid];
 
-      // DEN STORE RETTELSEN: Her bruker vi nå { visible: false } og { visible: "reset" } 
-      // sammen med chunking, slik vi vet fungerer for API-et!
+      // KORREKT IMPLEMENTERING V4.4 - FJERNET CHUNKING
+      // Sender alle IDs til 3D-motoren i en eneste massiv payload
       if (hide.length > 0) {
-        for (let i = 0; i < hide.length; i += API_CHUNK_LIMIT) {
-          const chunk = hide.slice(i, i + API_CHUNK_LIMIT);
-          await API.viewer.setObjectState({ modelObjectIds: [{ modelId: mid, objectRuntimeIds: chunk }] }, { visible: false });
-        }
+        await API.viewer.setObjectState({ modelObjectIds: [{ modelId: mid, objectRuntimeIds: hide }] }, { visible: false });
         hiddenTotal += hide.length;
       }
       
       if (show.length > 0) {
-        for (let i = 0; i < show.length; i += API_CHUNK_LIMIT) {
-          const chunk = show.slice(i, i + API_CHUNK_LIMIT);
-          await API.viewer.setObjectState({ modelObjectIds: [{ modelId: mid, objectRuntimeIds: chunk }] }, { visible: "reset" });
-        }
+        await API.viewer.setObjectState({ modelObjectIds: [{ modelId: mid, objectRuntimeIds: show }] }, { visible: "reset" });
         shownTotal += show.length;
       }
     }
@@ -463,11 +456,8 @@ async function resetFilter() {
 
     for (const mid of Object.keys(modelsToReset)) {
       if (modelsToReset[mid].length > 0) {
-        const allIds = modelsToReset[mid];
-        for (let i = 0; i < allIds.length; i += API_CHUNK_LIMIT) {
-          const chunk = allIds.slice(i, i + API_CHUNK_LIMIT);
-          await API.viewer.setObjectState({ modelObjectIds: [{ modelId: mid, objectRuntimeIds: chunk }] }, { visible: "reset" });
-        }
+        // FJERNET CHUNKING HER OGSÅ
+        await API.viewer.setObjectState({ modelObjectIds: [{ modelId: mid, objectRuntimeIds: modelsToReset[mid] }] }, { visible: "reset" });
       }
     }
 
