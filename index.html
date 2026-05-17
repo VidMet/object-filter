@@ -2,7 +2,7 @@
 <html lang="nb">
 <head>
   <meta charset="UTF-8"/>
-  <title>BIM Avansert Filtrering v4.5</title>
+  <title>BIM Avansert Filtrering v4.6</title>
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   
   <script src="https://components.connect.trimble.com/trimble-connect-workspace-api/index.js"></script>
@@ -42,6 +42,7 @@
     #statusBar { font-family: var(--mono); font-size: 11px; padding: 6px 16px; background: var(--blue-dim); color: var(--blue); border-bottom: 1px solid #1a3a5c; }
     #statusBar.ok { background: #1a3a22; color: var(--green); }
     #statusBar.error { background: #3a1212; color: var(--red); }
+    #statusBar.warn { background: #3a2d05; color: #d29922; }
 
     #controlBar { background: var(--surface); border-bottom: 1px solid var(--border); padding: 8px 16px; display: flex; gap: 15px; align-items: center; }
     .select-group { display: flex; align-items: center; gap: 8px; flex: 1; }
@@ -71,8 +72,8 @@
 
 <header>
   <div class="header-title">
-    <h1>BIM Avansert Filtrering v4.5</h1>
-    <p>Dynamisk flervalgsfiltrering (Med streng Geometri-fanger)</p>
+    <h1>BIM Avansert Filtrering v4.6</h1>
+    <p>Ekte hierarki-arv og standard skjule-API</p>
   </div>
   <button class="btn btn-ghost" id="btnLoad" disabled>Hent modeller</button>
   <button class="btn btn-primary" id="btnFilter" disabled>🔍 Filtrer i 3D</button>
@@ -120,7 +121,7 @@ let allDiscoveredProperties = new Set();
 
 const FIXED_PROPS = ["MMI", "Underdisiplin", "PNS Kode", "Bruksstatus", "Objektklasse", "Objekttype", "Materiale"];
 const IGNORE = new Set(['IFCPROJECT','IFCSITE','IFCBUILDING','IFCBUILDINGSTOREY']);
-const API_CHUNK_LIMIT = 3000; // Optimalisert for store datasett
+const API_CHUNK_LIMIT = 2000; // Optimal pakke-størrelse for 3D-motoren
 
 const $ = id => document.getElementById(id);
 const setStatus = (m, c='') => { $('statusBar').textContent = m; $('statusBar').className = c; };
@@ -142,7 +143,7 @@ async function connect(){
   try {
     API = await window.TrimbleConnectWorkspace.connect(window.parent);
     $('btnLoad').disabled = false;
-    setStatus('✅ Tilkoblet Trimble Connect.', 'ok');
+    setStatus('✅ Tilkoblet Trimble Connect. Husk å slå AV "Spøkelsesmodus" i 3D-innstillingene!', 'warn');
   } catch(e) { setStatus('❌ Kunne ikke koble til API.', 'error'); }
 }
 
@@ -192,6 +193,7 @@ async function loadModels(){
   } catch(e) { setStatus('❌ Feil ved henting av modeller: ' + e.message, 'error'); }
 }
 
+// Henter alle IDs flatt ut
 function getAllRuntimeIds(obj) {
   let ids = [];
   const mainId = obj.id || obj.objectRuntimeId;
@@ -200,6 +202,17 @@ function getAllRuntimeIds(obj) {
     obj.objects.forEach(child => { ids = ids.concat(getAllRuntimeIds(child)); });
   }
   return ids;
+}
+
+// NY FUNKSJON: Bygger et ekte, rekursivt kart over hvem som er forelder til hvem!
+function buildHierarchyMap(obj, parentId = null, map) {
+  const currentId = obj.id || obj.objectRuntimeId;
+  if (parentId != null && currentId != null) {
+      map.set(currentId, parentId);
+  }
+  if (obj.objects && Array.isArray(obj.objects)) {
+      obj.objects.forEach(child => buildHierarchyMap(child, currentId, map));
+  }
 }
 
 async function analyzeModelProperties() {
@@ -258,17 +271,13 @@ async function analyzeModelProperties() {
     const mid = chunkGroup.modelId;
     const ids = chunkGroup.objectIds;
 
+    // Bygg det ekte hierarkiet
     const childToParentMap = new Map();
     const targetModel = allModels.find(m => m.id === mid);
     if (targetModel) {
-      targetModel.rawObjects.forEach(rawO => {
-        const parentId = rawO.id || rawO.objectRuntimeId;
-        const allSubIds = getAllRuntimeIds(rawO);
-        allSubIds.forEach(subId => { if (subId !== parentId) childToParentMap.set(subId, parentId); });
-      });
+      targetModel.rawObjects.forEach(rawO => buildHierarchyMap(rawO, null, childToParentMap));
     }
 
-    // V4.5 FIKS: Vi forhåndsregistrerer ALLE IDs slik at ingen geometrinoder blir glemt
     const tempObjectsDataMap = new Map();
     ids.forEach(id => {
       tempObjectsDataMap.set(id, {
@@ -305,13 +314,12 @@ async function analyzeModelProperties() {
       setStatus(`⏳ Skanner egenskaper... ${processedCount} / ${totalObjectsCount}`);
     }
     
-    // ARVELOGIKK
+    // NY ARVELOGIKK: Klatrer oppover det ekte hierarkiet
     tempObjectsDataMap.forEach((obj, runtimeId) => {
       let currentParentId = childToParentMap.get(runtimeId);
       let depth = 0;
       
-      // La tomme geometrinoder hente egenskaper fra foreldrene sine
-      while (currentParentId && tempObjectsDataMap.has(currentParentId) && depth < 5) {
+      while (currentParentId != null && tempObjectsDataMap.has(currentParentId) && depth < 10) {
         const parentObj = tempObjectsDataMap.get(currentParentId);
         for (const key in parentObj.props) {
           if (!obj.props[key]) { 
@@ -335,7 +343,7 @@ async function analyzeModelProperties() {
   $('emptyState').style.display = 'none';
   $('btnFilter').disabled = false;
   $('btnReset').disabled = false;
-  setStatus(`✅ Analyse ferdig. Hentet ${modelObjectsData.length} objekter og noder.`, 'ok');
+  setStatus(`✅ Analyse ferdig. Hentet data for ${modelObjectsData.length} geometri-noder.`, 'ok');
 }
 
 function renderFixedPanels() {
@@ -429,10 +437,11 @@ async function executeFilter() {
     for (const mid of Object.keys(visibilityMap)) {
       const { show, hide } = visibilityMap[mid];
 
+      // BRUKER NÅ { hidden: true/false } SOM ER DEN ENESIKE OFFISIELLE API-KOMMANDOEN!
       if (hide.length > 0) {
         for (let i = 0; i < hide.length; i += API_CHUNK_LIMIT) {
           const chunk = hide.slice(i, i + API_CHUNK_LIMIT);
-          await API.viewer.setObjectState({ modelObjectIds: [{ modelId: mid, objectRuntimeIds: chunk }] }, { visible: false });
+          await API.viewer.setObjectState({ modelObjectIds: [{ modelId: mid, objectRuntimeIds: chunk }] }, { hidden: true });
         }
         hiddenTotal += hide.length;
       }
@@ -440,7 +449,7 @@ async function executeFilter() {
       if (show.length > 0) {
         for (let i = 0; i < show.length; i += API_CHUNK_LIMIT) {
           const chunk = show.slice(i, i + API_CHUNK_LIMIT);
-          await API.viewer.setObjectState({ modelObjectIds: [{ modelId: mid, objectRuntimeIds: chunk }] }, { visible: "reset" });
+          await API.viewer.setObjectState({ modelObjectIds: [{ modelId: mid, objectRuntimeIds: chunk }] }, { hidden: false });
         }
         shownTotal += show.length;
       }
@@ -469,7 +478,7 @@ async function resetFilter() {
         const allIds = modelsToReset[mid];
         for (let i = 0; i < allIds.length; i += API_CHUNK_LIMIT) {
           const chunk = allIds.slice(i, i + API_CHUNK_LIMIT);
-          await API.viewer.setObjectState({ modelObjectIds: [{ modelId: mid, objectRuntimeIds: chunk }] }, { visible: "reset" });
+          await API.viewer.setObjectState({ modelObjectIds: [{ modelId: mid, objectRuntimeIds: chunk }] }, { hidden: false });
         }
       }
     }
