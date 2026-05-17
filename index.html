@@ -2,7 +2,7 @@
 <html lang="nb">
 <head>
   <meta charset="UTF-8"/>
-  <title>BIM Avansert Filtrering v4.6</title>
+  <title>BIM Avansert Filtrering v4.7</title>
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   
   <script src="https://components.connect.trimble.com/trimble-connect-workspace-api/index.js"></script>
@@ -72,8 +72,8 @@
 
 <header>
   <div class="header-title">
-    <h1>BIM Avansert Filtrering v4.6</h1>
-    <p>Ekte hierarki-arv og standard skjule-API</p>
+    <h1>BIM Avansert Filtrering v4.7</h1>
+    <p>Ekte hierarki-arv og solid "Visible"-kommando</p>
   </div>
   <button class="btn btn-ghost" id="btnLoad" disabled>Hent modeller</button>
   <button class="btn btn-primary" id="btnFilter" disabled>🔍 Filtrer i 3D</button>
@@ -121,7 +121,6 @@ let allDiscoveredProperties = new Set();
 
 const FIXED_PROPS = ["MMI", "Underdisiplin", "PNS Kode", "Bruksstatus", "Objektklasse", "Objekttype", "Materiale"];
 const IGNORE = new Set(['IFCPROJECT','IFCSITE','IFCBUILDING','IFCBUILDINGSTOREY']);
-const API_CHUNK_LIMIT = 2000; // Optimal pakke-størrelse for 3D-motoren
 
 const $ = id => document.getElementById(id);
 const setStatus = (m, c='') => { $('statusBar').textContent = m; $('statusBar').className = c; };
@@ -193,7 +192,6 @@ async function loadModels(){
   } catch(e) { setStatus('❌ Feil ved henting av modeller: ' + e.message, 'error'); }
 }
 
-// Henter alle IDs flatt ut
 function getAllRuntimeIds(obj) {
   let ids = [];
   const mainId = obj.id || obj.objectRuntimeId;
@@ -204,7 +202,7 @@ function getAllRuntimeIds(obj) {
   return ids;
 }
 
-// NY FUNKSJON: Bygger et ekte, rekursivt kart over hvem som er forelder til hvem!
+// Bygger et ekte kart over hvem som er forelder til hvem
 function buildHierarchyMap(obj, parentId = null, map) {
   const currentId = obj.id || obj.objectRuntimeId;
   if (parentId != null && currentId != null) {
@@ -271,7 +269,6 @@ async function analyzeModelProperties() {
     const mid = chunkGroup.modelId;
     const ids = chunkGroup.objectIds;
 
-    // Bygg det ekte hierarkiet
     const childToParentMap = new Map();
     const targetModel = allModels.find(m => m.id === mid);
     if (targetModel) {
@@ -314,7 +311,7 @@ async function analyzeModelProperties() {
       setStatus(`⏳ Skanner egenskaper... ${processedCount} / ${totalObjectsCount}`);
     }
     
-    // NY ARVELOGIKK: Klatrer oppover det ekte hierarkiet
+    // ARVELOGIKK: Klatrer oppover i hierarkiet
     tempObjectsDataMap.forEach((obj, runtimeId) => {
       let currentParentId = childToParentMap.get(runtimeId);
       let depth = 0;
@@ -437,20 +434,14 @@ async function executeFilter() {
     for (const mid of Object.keys(visibilityMap)) {
       const { show, hide } = visibilityMap[mid];
 
-      // BRUKER NÅ { hidden: true/false } SOM ER DEN ENESIKE OFFISIELLE API-KOMMANDOEN!
+      // KORREKT IMPLEMENTERING V4.7 (Massiv payload, uten oppdeling, med visible: false/reset)
       if (hide.length > 0) {
-        for (let i = 0; i < hide.length; i += API_CHUNK_LIMIT) {
-          const chunk = hide.slice(i, i + API_CHUNK_LIMIT);
-          await API.viewer.setObjectState({ modelObjectIds: [{ modelId: mid, objectRuntimeIds: chunk }] }, { hidden: true });
-        }
+        await API.viewer.setObjectState({ modelObjectIds: [{ modelId: mid, objectRuntimeIds: hide }] }, { visible: false });
         hiddenTotal += hide.length;
       }
       
       if (show.length > 0) {
-        for (let i = 0; i < show.length; i += API_CHUNK_LIMIT) {
-          const chunk = show.slice(i, i + API_CHUNK_LIMIT);
-          await API.viewer.setObjectState({ modelObjectIds: [{ modelId: mid, objectRuntimeIds: chunk }] }, { hidden: false });
-        }
+        await API.viewer.setObjectState({ modelObjectIds: [{ modelId: mid, objectRuntimeIds: show }] }, { visible: "reset" });
         shownTotal += show.length;
       }
     }
@@ -475,11 +466,7 @@ async function resetFilter() {
 
     for (const mid of Object.keys(modelsToReset)) {
       if (modelsToReset[mid].length > 0) {
-        const allIds = modelsToReset[mid];
-        for (let i = 0; i < allIds.length; i += API_CHUNK_LIMIT) {
-          const chunk = allIds.slice(i, i + API_CHUNK_LIMIT);
-          await API.viewer.setObjectState({ modelObjectIds: [{ modelId: mid, objectRuntimeIds: chunk }] }, { hidden: false });
-        }
+        await API.viewer.setObjectState({ modelObjectIds: [{ modelId: mid, objectRuntimeIds: modelsToReset[mid] }] }, { visible: "reset" });
       }
     }
 
